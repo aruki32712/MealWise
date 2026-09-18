@@ -19,11 +19,21 @@ const foodNorm=(v:string|null|undefined)=>norm(v)
   .replace(/\btomatos\b/g,"tomatoes")
   .replace(/\btinned\b/g,"")
   .replace(/\bcanned\b/g,"")
+  .replace(/\bsesame seed oil\b/g,"sesame oil")
+  .replace(/\bspring onions?\b/g,"green onions")
+  .replace(/\bchicken bouillon powder\b/g,"chicken bouillon")
   .replace(/\s+/g," ")
   .trim();
 const money=(v:number|null)=>v==null?"—":new Intl.NumberFormat(undefined,{style:"currency",currency:"USD"}).format(v);
 const round2=(v:number)=>Math.round(v*100)/100;
-function sameFood(a:string,b:string){const x=foodNorm(a),y=foodNorm(b);return Boolean(x&&y&&(x===y||x.includes(y)||y.includes(x)))}
+function sameFood(a:string,b:string){
+  const x=foodNorm(a),y=foodNorm(b);
+  if(!x||!y)return false;
+  if(x===y||x.includes(y)||y.includes(x))return true;
+  const important=(v:string)=>v.split(" ").filter(t=>t.length>=3&&!["the","and","with","for","flavored","flavour"].includes(t));
+  const xt=important(x),yt=new Set(important(y));
+  return xt.length>0&&xt.every(t=>yt.has(t));
+}
 function unitsMatch(a:string|null,b:string|null){return unitsCompatible(a,b)}
 function haversine(lat1:number,lon1:number,lat2:number,lon2:number){const r=(n:number)=>n*Math.PI/180,R=3958.8,dLat=r(lat2-lat1),dLon=r(lon2-lon1);const a=Math.sin(dLat/2)**2+Math.cos(r(lat1))*Math.cos(r(lat2))*Math.sin(dLon/2)**2;return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a))}
 function combos<T>(a:T[],max:number){const out:T[][]=[];const walk=(start:number,c:T[])=>{if(c.length){out.push([...c]);if(c.length===max)return}for(let i=start;i<a.length;i++){c.push(a[i]);walk(i+1,c);c.pop()}};walk(0,[]);return out}
