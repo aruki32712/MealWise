@@ -31,7 +31,7 @@ export default function MealWiseShoppingIntelligence({householdId}:{householdId:
   const [stores,setStores]=useState<Store[]>([]);
   const [prices,setPrices]=useState<Price[]>([]);
   const [selectedId,setSelectedId]=useState<Strategy["id"]>("balance");
-  const [busy,setBusy]=useState(false); const [loading,setLoading]=useState(true); const [error,setError]=useState(""); const [message,setMessage]=useState("");
+  const [busy,setBusy]=useState(false); const [priceBusy,setPriceBusy]=useState(false); const [loading,setLoading]=useState(true); const [error,setError]=useState(""); const [message,setMessage]=useState("");
 
   useEffect(()=>{void load()},[householdId]);
 
@@ -134,6 +134,22 @@ export default function MealWiseShoppingIntelligence({householdId}:{householdId:
   const over=selected?.total!=null&&budget!=null&&selected.total>Number(budget);
   const cheaper=strategies.filter(s=>s.complete&&s.total!=null&&selected?.total!=null&&s.total<selected.total).sort((a,b)=>(a.total??0)-(b.total??0))[0];
 
+  async function refreshLivePrices(){
+    setPriceBusy(true);setError("");setMessage("");
+    const {data,error:invokeError}=await supabase.functions.invoke("kroger-pricing",{body:{action:"sync",household_id:householdId}});
+    if(invokeError){
+      let payload:any=null;
+      try{const response=(invokeError as any)?.context;if(response?.json)payload=await response.json()}catch{}
+      setError(payload?.error??invokeError.message??"Unable to refresh live prices.");
+      setPriceBusy(false);
+      return;
+    }
+    await load();
+    if((data?.locations_found??0)===0)setMessage(data?.message??"No Kroger-family locations were returned for this household.");
+    else setMessage(`Live pricing refreshed from ${data?.provider??"Kroger"}: ${data?.prices_saved??0} price records from ${data?.locations_found??0} nearby location(s).`);
+    setPriceBusy(false);
+  }
+
   async function saveList(){if(!plan){setError("Create and save a weekly plan first.");return}setBusy(true);setError("");setMessage("");
     const existing=await supabase.from("shopping_lists").select("id").eq("household_id",householdId).eq("meal_plan_id",plan.id).eq("status","active").order("updated_at",{ascending:false}).limit(1).maybeSingle();if(existing.error){setError(existing.error.message);setBusy(false);return}
     let listId=existing.data?.id as string|undefined;const payload={household_id:householdId,meal_plan_id:plan.id,name:`MealWise Week of ${plan.week_start}`,status:"active",estimated_total:selected.complete?selected.total:null,updated_at:new Date().toISOString()};
@@ -147,7 +163,7 @@ export default function MealWiseShoppingIntelligence({householdId}:{householdId:
   if(loading)return <div className="mw-empty">Loading Smart Basket…</div>;
   if(!plan)return <div className="mw-feature"><div className="mw-feature-title"><div><h2>Smart Basket</h2><p>Save a Weekly Plan first. Then MealWise can combine ingredients and compare store strategies.</p></div></div></div>;
   return <div className="mw-feature">
-    <div className="mw-feature-title"><div><h2>Smart Basket</h2><p>Combines selected meals, converts compatible recipe/pantry units, subtracts what you already have, matches package sizes, and applies your extra-store savings rule.</p></div><button className="mw-primary" disabled={busy} onClick={saveList}>{busy?"Saving…":"Save Shopping List"}</button></div>
+    <div className="mw-feature-title"><div><h2>Smart Basket</h2><p>Combines selected meals, converts compatible recipe/pantry units, subtracts what you already have, matches package sizes, and applies your extra-store savings rule.</p></div><div className="mw-card-actions"><button className="mw-secondary" type="button" disabled={priceBusy||busy} onClick={refreshLivePrices}>{priceBusy?"Refreshing…":"Refresh Live Prices"}</button><button className="mw-primary" disabled={busy||priceBusy} onClick={saveList}>{busy?"Saving…":"Save Shopping List"}</button></div></div>
     <div className="mw-shopping-summary"><div><span>Required items</span><strong>{items.length}</strong></div><div><span>Pantry-covered</span><strong>{items.filter(i=>i.pantryCovered).length}</strong></div><div><span>Budget</span><strong>{money(budget==null?null:Number(budget))}</strong></div><div><span>Selected total</span><strong>{money(selected?.total??null)}</strong></div></div>
     {!household?.zip_code&&household?.latitude==null&&<div className="mw-alert error">Add a ZIP code or location in Setup before MealWise compares local stores.</div>}
     {stores.length===0&&<div className="mw-generator-note"><strong>No verified local stores yet.</strong> Smart Basket will not invent store availability or prices.</div>}
@@ -158,6 +174,6 @@ export default function MealWiseShoppingIntelligence({householdId}:{householdId:
       {selected?.missing.length>0&&<div className="mw-generator-note"><strong>Missing verified prices:</strong> {selected.missing.map(i=>i.name).join(", ")}. MealWise will not fabricate a total.</div>}
     </section>
     <section className="mw-shopping-section"><h3>Budget check</h3>{selected?.total==null?<div className="mw-generator-note">A complete budget comparison needs verified prices for every purchase item.</div>:!over?<div className="mw-budget-good"><strong>Within budget.</strong> {budget!=null&&<>About {money(Number(budget)-selected.total)} remains.</>}</div>:<div className="mw-budget-rescue"><div className="mw-budget-over"><strong>Over budget by {money(selected.total-Number(budget))}</strong><span>Budget Rescue only proposes changes supported by verified data.</span></div>{cheaper?<div className="mw-rescue-row"><div><strong>Switch to {cheaper.title}</strong><span>Verified store-strategy savings: {money(selected.total-(cheaper.total??selected.total))}</span></div><button className="mw-secondary" onClick={()=>setSelectedId(cheaper.id)}>Use strategy</button></div>:<div className="mw-generator-note">No verified store-only rescue is available yet. MealWise will not invent ingredient or recipe substitutions.</div>}</div>}</section>
-    <div className="mw-generator-footnote">Price safety: only recent, unexpired `store_prices` records are used. Package multiplication happens only when units match; MealWise does not guess unit conversions.</div>
+    <div className="mw-generator-footnote">Price safety: only recent, unexpired verified provider prices are used. Compatible package units are converted before package counts are calculated; unknown conversions remain unpriced rather than guessed.</div>
   </div>;
 }
