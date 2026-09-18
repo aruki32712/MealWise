@@ -52,6 +52,7 @@ export default function MealWiseAccountOnboarding() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [isAdminTester, setIsAdminTester] = useState(false);
+  const [calendarRecipeId, setCalendarRecipeId] = useState<string | null>(() => new URLSearchParams(window.location.search).get("recipe"));
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => { setUser(data.session?.user ?? null); setBusy(false); });
@@ -79,6 +80,11 @@ export default function MealWiseAccountOnboarding() {
     if (!household) { setForm(emptyForm); setHouseholdId(null); setBusy(false); return; }
 
     setHouseholdId(household.id);
+    const linkedRecipeId = new URLSearchParams(window.location.search).get("recipe");
+    if (linkedRecipeId) {
+      setCalendarRecipeId(linkedRecipeId);
+      setActiveSection("weekly");
+    }
     const { data: pref, error: pError } = await supabase.from("household_preferences")
       .select("dietary_plan,allergies,disliked_foods,preferred_stores,excluded_stores,max_cook_minutes,min_savings_for_extra_stop,preferred_stop_limit")
       .eq("household_id", household.id).maybeSingle();
@@ -205,7 +211,7 @@ export default function MealWiseAccountOnboarding() {
     {activeSection === "discover" && householdId && <MealWiseRecipeDiscovery householdId={householdId} />}
     {activeSection === "recipes" && householdId && <MyRecipes householdId={householdId} />}
     {activeSection === "pantry" && householdId && <MyPantry householdId={householdId} />}
-    {activeSection === "weekly" && householdId && <MealWiseWeeklyPlanner householdId={householdId} />}
+    {activeSection === "weekly" && householdId && <MealWiseWeeklyPlanner householdId={householdId} initialRecipeId={calendarRecipeId} />}
     {activeSection === "shopping" && householdId && <MealWiseShoppingIntelligence householdId={householdId} />}
     {activeSection === "test" && isAdminTester && <MealWiseDemoTest />}
   </section></main>;
