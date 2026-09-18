@@ -13,7 +13,7 @@ function monday(){const d=new Date();const day=d.getDay();d.setDate(d.getDate()+
 function addDays(date:string,n:number){const d=new Date(`${date}T12:00:00`);d.setDate(d.getDate()+n);return iso(d)}
 function matches(a:string,b:string){const x=norm(a),y=norm(b);return Boolean(x&&y&&(x===y||x.includes(y)||y.includes(x)))}
 
-export default function MealWiseWeeklyPlanner({householdId}:{householdId:string}){
+export default function MealWiseWeeklyPlanner({householdId,initialRecipeId}:{householdId:string;initialRecipeId?:string|null}){
   const [weekStart,setWeekStart]=useState(monday());
   const [budget,setBudget]=useState("");
   const [dinners,setDinners]=useState(7);
@@ -31,6 +31,9 @@ export default function MealWiseWeeklyPlanner({householdId}:{householdId:string}
   const [viewMealId,setViewMealId]=useState<string|null>(null);
 
   useEffect(()=>{void load()},[householdId]);
+  useEffect(()=>{
+    if(initialRecipeId&&meals.some(m=>m.id===initialRecipeId))setViewMealId(initialRecipeId);
+  },[initialRecipeId,meals]);
 
   async function load(){
     setLoading(true);setError("");
@@ -77,6 +80,70 @@ export default function MealWiseWeeklyPlanner({householdId}:{householdId:string}
 
   function swap(index:number){const current=plan[index];if(!current.mealId)return;const used=new Set(plan.filter((_,i)=>i!==index).map(x=>x.mealId).filter(Boolean) as string[]);const next=rankedDinners(used).find(x=>x.meal.id!==current.mealId&&!used.has(x.meal.id))??rankedDinners().find(x=>x.meal.id!==current.mealId);if(!next){setError("No other eligible dinner recipe is available to swap.");return}setPlan(p=>p.map((x,i)=>i===index?{...x,mealId:next.meal.id,name:next.meal.name,selected:true,pantryMatches:pantryMatches(next.meal.id)}:x));setMessage(`Swapped in ${next.meal.name}.`)}
 
+  function recipeUrl(mealId:string){
+    const url=new URL(window.location.origin);
+    url.searchParams.set("recipe",mealId);
+    return url.toString();
+  }
+  function openRecipe(mealId:string){
+    setViewMealId(mealId);
+    const url=new URL(window.location.href);
+    url.searchParams.set("recipe",mealId);
+    window.history.replaceState({}, "", url.toString());
+  }
+  function closeRecipe(){
+    setViewMealId(null);
+    const url=new URL(window.location.href);
+    url.searchParams.delete("recipe");
+    window.history.replaceState({}, "", url.toString());
+  }
+  function escapeIcs(value:string){
+    return value.replace(/\\/g,"\\\\").replace(/\r?\n/g,"\\n").replace(/,/g,"\\,").replace(/;/g,"\\;");
+  }
+  function dateToIcs(date:string){return date.replace(/-/g,"")}
+  function utcStamp(){return new Date().toISOString().replace(/[-:]/g,"").replace(/\.\d{3}Z$/,"Z")}
+  async function exportCalendar(){
+    const selectedEntries=plan.filter(entry=>entry.selected);
+    if(!selectedEntries.length){setError("There are no selected meals to add to the calendar.");return}
+    const events=selectedEntries.map(entry=>{
+      const meal=entry.mealId?meals.find(m=>m.id===entry.mealId):null;
+      const start=dateToIcs(entry.date);
+      const end=dateToIcs(addDays(entry.date,1));
+      const title=`${entry.slot.charAt(0).toUpperCase()+entry.slot.slice(1)}: ${entry.name}`;
+      const link=entry.mealId?recipeUrl(entry.mealId):"";
+      const description=meal
+        ? [meal.description||"",link?`View recipe in MealWise: ${link}`:""].filter(Boolean).join("\n\n")
+        : entry.kind==="leftover"?"MealWise planned leftovers.":"MealWise planned takeout / restaurant.";
+      return [
+        "BEGIN:VEVENT",
+        `UID:mealwise-${entry.mealId??entry.kind}-${entry.date}@mealwise`,
+        `DTSTAMP:${utcStamp()}`,
+        `DTSTART;VALUE=DATE:${start}`,
+        `DTEND;VALUE=DATE:${end}`,
+        `SUMMARY:${escapeIcs(title)}`,
+        `DESCRIPTION:${escapeIcs(description)}`,
+        ...(link?[`URL:${link}`]:[]),
+        "END:VEVENT"
+      ].join("\r\n");
+    });
+    const ics=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//MealWise//Weekly Meal Plan//EN","CALSCALE:GREGORIAN","METHOD:PUBLISH",...events,"END:VCALENDAR"].join("\r\n");
+    const blob=new Blob([ics],{type:"text/calendar;charset=utf-8"});
+    const file=new File([blob],`MealWise-${weekStart}.ics`,{type:"text/calendar"});
+    try{
+      if(navigator.share&&navigator.canShare?.({files:[file]})){
+        await navigator.share({title:"MealWise Weekly Plan",text:"Add this MealWise weekly meal plan to your calendar.",files:[file]});
+        setMessage("Calendar file ready to add to your calendar.");
+        return;
+      }
+    }catch(error){
+      if((error as DOMException)?.name==="AbortError")return;
+    }
+    const href=URL.createObjectURL(blob),a=document.createElement("a");
+    a.href=href;a.download=file.name;document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(href),1000);
+    setMessage("Calendar file created. Open the downloaded .ics file to add the week to your calendar.");
+  }
+
   async function save(){if(!plan.length){setError("Generate a plan first.");return}setBusy(true);setError("");
     const p=await supabase.from("meal_plans").upsert({household_id:householdId,week_start:weekStart,budget_target:budget?Number(budget):null,status:"active",breakfast_count:0,lunch_count:0,dinner_count:dinners,snack_count:0,leftover_nights:leftovers,takeout_nights:takeout,use_leftovers:leftovers>0,updated_at:new Date().toISOString()},{onConflict:"household_id,week_start"}).select("id").single();
     if(p.error){setError(p.error.message);setBusy(false);return}const id=p.data.id;const clear=await supabase.from("meal_plan_meals").delete().eq("meal_plan_id",id);if(clear.error){setError(clear.error.message);setBusy(false);return}
@@ -96,13 +163,13 @@ export default function MealWiseWeeklyPlanner({householdId}:{householdId:string}
       <label>Takeout nights<input type="number" min={0} max={7} value={takeout} onChange={e=>setTakeout(Number(e.target.value))} /></label>
     </div><div className="mw-generator-note"><strong>Generator rules:</strong> excluded meals, allergies/dislikes and cooking-time limits are respected. Favorites, pantry overlap and matching diet tags score higher.</div><button className="mw-primary">Generate Weekly Plan</button></form>
     {error&&<div className="mw-alert error">{error}</div>}{message&&<div className="mw-alert success">{message}</div>}
-    {plan.length>0&&<div className="mw-saved-section"><div className="mw-feature-title"><div><h3>Generated week</h3><p>{plan.filter(x=>x.kind==="meal"&&x.selected).length} selected recipe dinner(s)</p></div><button className="mw-primary" disabled={busy} onClick={save}>{busy?"Saving…":"Save Weekly Plan"}</button></div><div className="mw-week-grid">{Array.from({length:7},(_,day)=>{const date=addDays(weekStart,day),entries=plan.filter(x=>x.date===date);return <section className="mw-day-card" key={date}><h4>{new Date(`${date}T12:00:00`).toLocaleDateString(undefined,{weekday:"long",month:"short",day:"numeric"})}</h4>{entries.length?entries.map((entry,i)=><article className={`mw-plan-meal ${entry.selected?"":"mw-plan-removed"}`} key={`${entry.date}-${i}`}><div><span className="mw-slot">{entry.slot}</span>{entry.kind==="meal"&&entry.mealId
-  ? <button type="button" className="mw-recipe-link" onClick={()=>setViewMealId(entry.mealId)}>{entry.name}<span>View recipe</span></button>
+    {plan.length>0&&<div className="mw-saved-section"><div className="mw-feature-title"><div><h3>Generated week</h3><p>{plan.filter(x=>x.kind==="meal"&&x.selected).length} selected recipe dinner(s)</p></div><div className="mw-card-actions"><button type="button" className="mw-secondary" onClick={exportCalendar}>Add Week to Calendar</button><button className="mw-primary" disabled={busy} onClick={save}>{busy?"Saving…":"Save Weekly Plan"}</button></div></div><div className="mw-week-grid">{Array.from({length:7},(_,day)=>{const date=addDays(weekStart,day),entries=plan.filter(x=>x.date===date);return <section className="mw-day-card" key={date}><h4>{new Date(`${date}T12:00:00`).toLocaleDateString(undefined,{weekday:"long",month:"short",day:"numeric"})}</h4>{entries.length?entries.map((entry,i)=><article className={`mw-plan-meal ${entry.selected?"":"mw-plan-removed"}`} key={`${entry.date}-${i}`}><div><span className="mw-slot">{entry.slot}</span>{entry.kind==="meal"&&entry.mealId
+  ? <button type="button" className="mw-recipe-link" onClick={()=>openRecipe(entry.mealId)}>{entry.name}<span>View recipe</span></button>
   : <strong>{entry.name}</strong>}
 {entry.pantryMatches>0&&<small>{entry.pantryMatches} pantry match(es)</small>}</div>{entry.kind==="meal"&&<div className="mw-plan-actions"><button type="button" className="mw-secondary" onClick={()=>setPlan(p=>p.map((x,j)=>j===plan.indexOf(entry)?{...x,selected:!x.selected}:x))}>{entry.selected?"Remove":"Keep"}</button><button type="button" className="mw-secondary" onClick={()=>swap(plan.indexOf(entry))}>Swap</button></div>}</article>):<p className="mw-day-empty">No dinner planned</p>}</section>})}</div></div>}
-    {viewMeal&&<div className="mw-recipe-viewer-backdrop" role="presentation" onClick={()=>setViewMealId(null)}>
+    {viewMeal&&<div className="mw-recipe-viewer-backdrop" role="presentation" onClick={closeRecipe}>
       <section className="mw-recipe-viewer" role="dialog" aria-modal="true" aria-label={viewMeal.name} onClick={e=>e.stopPropagation()}>
-        <div className="mw-recipe-viewer-head"><div><span className="mw-slot">Recipe</span><h3>{viewMeal.name}</h3></div><button type="button" className="mw-secondary" onClick={()=>setViewMealId(null)}>Close</button></div>
+        <div className="mw-recipe-viewer-head"><div><span className="mw-slot">Recipe</span><h3>{viewMeal.name}</h3></div><button type="button" className="mw-secondary" onClick={closeRecipe}>Close</button></div>
         <div className="mw-meta"><span>{viewMeal.servings} serving{viewMeal.servings===1?"":"s"}</span>{(viewMeal.prep_minutes||viewMeal.cook_minutes)&&<span>{(viewMeal.prep_minutes??0)+(viewMeal.cook_minutes??0)} min</span>}</div>
         {viewMeal.description&&<p className="mw-recipe-description">{viewMeal.description}</p>}
         <div className="mw-recipe-viewer-section"><h4>Ingredients</h4><div className="mw-recipe-ingredients">{viewIngredients.map((ingredient,i)=><div key={`${ingredient.ingredient_name}-${i}`}><strong>{ingredient.ingredient_name}</strong><span>{[ingredient.quantity,ingredient.unit].filter(v=>v!==null&&v!==undefined&&String(v).trim()!=="").join(" ")||"As needed"}{ingredient.optional?" · optional":""}{ingredient.notes?` · ${ingredient.notes}`:""}</span></div>)}</div></div>
