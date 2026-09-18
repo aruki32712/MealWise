@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { supabase } from "./lib/supabase";
+import { normalizeUnit, parseMeasure } from "./lib/measurements";
 
 type PreferenceSummary = {
   dietary_plan: string | null;
@@ -172,16 +173,26 @@ export default function MealWiseRecipeDiscovery({ householdId }: { householdId: 
 
       if (mealError) throw mealError;
 
-      const ingredientRows = (recipe.ingredients ?? []).map((ingredient) => ({
-        meal_id: meal.id,
-        ingredient_name: ingredient.name,
-        normalized_name: normalizedName(ingredient.name),
-        quantity: null,
-        unit: null,
-        category: null,
-        optional: false,
-        notes: ingredient.measure || null,
-      }));
+      const ingredientRows = (recipe.ingredients ?? []).map((ingredient) => {
+        const parsed = parseMeasure(ingredient.measure);
+        const notes = [
+          ingredient.measure ? `Original measure: ${ingredient.measure}` : null,
+          parsed.descriptor ? `Descriptor: ${parsed.descriptor}` : null,
+          parsed.approximate ? "Approximate/range amount; MealWise uses the upper amount for shopping." : null,
+          !parsed.parsed && ingredient.measure ? "Could not structure this amount automatically." : null,
+        ].filter(Boolean).join(" · ") || null;
+
+        return {
+          meal_id: meal.id,
+          ingredient_name: ingredient.name,
+          normalized_name: normalizedName(ingredient.name),
+          quantity: parsed.quantity,
+          unit: normalizeUnit(parsed.unit),
+          category: null,
+          optional: false,
+          notes,
+        };
+      });
 
       if (ingredientRows.length) {
         const { error: ingredientError } = await supabase.from("meal_ingredients").insert(ingredientRows);
@@ -193,7 +204,7 @@ export default function MealWiseRecipeDiscovery({ householdId }: { householdId: 
 
       setSavedKeys((current) => new Set(current).add(recipe.result_key));
       setSelectedKey(recipe.result_key);
-      setMessage(`${recipe.title} was saved to My Recipes. Its original ingredient measures were preserved; structured quantity conversion will be improved later.`);
+      setMessage(`${recipe.title} was saved to My Recipes with structured ingredient amounts for pantry and Smart Basket conversion.`);
     } catch (e: any) {
       setError(e?.message ?? "Unable to save this recipe.");
     } finally {
