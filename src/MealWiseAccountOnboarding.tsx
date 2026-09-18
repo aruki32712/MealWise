@@ -5,7 +5,9 @@ import { MyPantry, MyRecipes } from "./MealWiseRecipesPantry";
 import MealWiseWeeklyPlanner from "./MealWiseWeeklyPlanner";
 import MealWiseShoppingIntelligence from "./MealWiseShoppingIntelligence";
 import MealWiseDemoTest from "./MealWiseDemoTest";
+import MealWiseRecipeDiscovery from "./MealWiseRecipeDiscovery";
 import "./MealWiseAccountOnboarding.css";
+import "./MealWiseRecipeDiscovery.css";
 
 type FormState = {
   householdName: string;
@@ -26,7 +28,7 @@ type FormState = {
   preferredStopLimit: number;
 };
 
-type Section = "setup" | "recipes" | "pantry" | "weekly" | "shopping" | "test";
+type Section = "setup" | "discover" | "recipes" | "pantry" | "weekly" | "shopping" | "test";
 
 const emptyForm: FormState = {
   householdName: "My Household", householdSize: 1, weeklyBudget: "", zipCode: "",
@@ -170,7 +172,7 @@ export default function MealWiseAccountOnboarding() {
 
   return <main className="mw-shell"><section className="mw-card mw-wide">
     <header className="mw-header"><div className="mw-brand"><span>M</span><div><h1>MealWise</h1><p>Your household food command center.</p></div></div><button className="mw-secondary" onClick={() => supabase.auth.signOut()}>Sign out</button></header>
-    <nav className="mw-app-nav"><button type="button" className={activeSection === "setup" ? "active" : ""} onClick={() => setActiveSection("setup")}>Setup</button><button type="button" className={activeSection === "recipes" ? "active" : ""} disabled={!householdId} onClick={() => setActiveSection("recipes")}>My Recipes</button><button type="button" className={activeSection === "pantry" ? "active" : ""} disabled={!householdId} onClick={() => setActiveSection("pantry")}>My Pantry</button><button type="button" className={activeSection === "weekly" ? "active" : ""} disabled={!householdId} onClick={() => setActiveSection("weekly")}>Weekly Plan</button><button type="button" className={activeSection === "shopping" ? "active" : ""} disabled={!householdId} onClick={() => setActiveSection("shopping")}>Smart Basket</button>{isAdminTester && <button type="button" className={activeSection === "test" ? "active" : ""} onClick={() => setActiveSection("test")}>Test Lab</button>}</nav>
+    <nav className="mw-app-nav"><button type="button" className={activeSection === "setup" ? "active" : ""} onClick={() => setActiveSection("setup")}>Setup</button><button type="button" className={activeSection === "discover" ? "active" : ""} disabled={!householdId} onClick={() => setActiveSection("discover")}>Discover</button><button type="button" className={activeSection === "recipes" ? "active" : ""} disabled={!householdId} onClick={() => setActiveSection("recipes")}>My Recipes</button><button type="button" className={activeSection === "pantry" ? "active" : ""} disabled={!householdId} onClick={() => setActiveSection("pantry")}>My Pantry</button><button type="button" className={activeSection === "weekly" ? "active" : ""} disabled={!householdId} onClick={() => setActiveSection("weekly")}>Weekly Plan</button><button type="button" className={activeSection === "shopping" ? "active" : ""} disabled={!householdId} onClick={() => setActiveSection("shopping")}>Smart Basket</button>{isAdminTester && <button type="button" className={activeSection === "test" ? "active" : ""} onClick={() => setActiveSection("test")}>Test Lab</button>}</nav>
 
     {activeSection === "setup" && <form className="mw-form" onSubmit={saveProfile}>
       <section><h2>Household & budget</h2><div className="mw-grid">
@@ -200,6 +202,7 @@ export default function MealWiseAccountOnboarding() {
       <div className="mw-actions"><button className="mw-primary" disabled={busy}>{busy ? "Saving…" : "Save & Continue"}</button><small>Signed in as {user.email}</small></div>
     </form>}
 
+    {activeSection === "discover" && householdId && <MealWiseRecipeDiscovery householdId={householdId} />}
     {activeSection === "recipes" && householdId && <MyRecipes householdId={householdId} />}
     {activeSection === "pantry" && householdId && <MyPantry householdId={householdId} />}
     {activeSection === "weekly" && householdId && <MealWiseWeeklyPlanner householdId={householdId} />}
