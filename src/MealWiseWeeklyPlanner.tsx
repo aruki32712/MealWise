@@ -1,8 +1,8 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { supabase } from "./lib/supabase";
 
-type Meal = { id:string; name:string; meal_type:"breakfast"|"lunch"|"dinner"|"snack"|null; favorite:boolean; prep_minutes:number|null; cook_minutes:number|null; tags:string[]; do_not_suggest:boolean };
-type Ingredient = { meal_id:string; ingredient_name:string; normalized_name:string|null };
+type Meal = { id:string; name:string; description:string|null; meal_type:"breakfast"|"lunch"|"dinner"|"snack"|null; servings:number; instructions:string|null; source_url:string|null; favorite:boolean; prep_minutes:number|null; cook_minutes:number|null; tags:string[]; do_not_suggest:boolean };
+type Ingredient = { meal_id:string; ingredient_name:string; normalized_name:string|null; quantity:number|null; unit:string|null; notes:string|null; optional:boolean };
 type Pantry = { item_name:string; normalized_name:string|null };
 type Entry = { mealId:string|null; name:string; date:string; slot:"breakfast"|"lunch"|"dinner"|"snack"; kind:"meal"|"leftover"|"takeout"; selected:boolean; pantryMatches:number };
 type Prefs = { allergies:string[]; disliked_foods:string[]; dietary_plan:string|null; max_cook_minutes:number|null };
@@ -28,6 +28,7 @@ export default function MealWiseWeeklyPlanner({householdId}:{householdId:string}
   const [loading,setLoading]=useState(true);
   const [message,setMessage]=useState("");
   const [error,setError]=useState("");
+  const [viewMealId,setViewMealId]=useState<string|null>(null);
 
   useEffect(()=>{void load()},[householdId]);
 
@@ -36,19 +37,21 @@ export default function MealWiseWeeklyPlanner({householdId}:{householdId:string}
     const [h,p,m,pa]=await Promise.all([
       supabase.from("households").select("weekly_budget").eq("id",householdId).single(),
       supabase.from("household_preferences").select("allergies,disliked_foods,dietary_plan,max_cook_minutes").eq("household_id",householdId).maybeSingle(),
-      supabase.from("meals").select("id,name,meal_type,favorite,prep_minutes,cook_minutes,tags,do_not_suggest").eq("household_id",householdId),
+      supabase.from("meals").select("id,name,description,meal_type,servings,instructions,source_url,favorite,prep_minutes,cook_minutes,tags,do_not_suggest").eq("household_id",householdId),
       supabase.from("pantry_items").select("item_name,normalized_name").eq("household_id",householdId),
     ]);
     const e=h.error||p.error||m.error||pa.error;if(e){setError(e.message);setLoading(false);return}
     setBudget(h.data?.weekly_budget==null?"":String(h.data.weekly_budget));
     setPrefs({allergies:p.data?.allergies??[],disliked_foods:p.data?.disliked_foods??[],dietary_plan:p.data?.dietary_plan??null,max_cook_minutes:p.data?.max_cook_minutes??null});
     const mealRows=(m.data??[]) as Meal[];setMeals(mealRows);setPantry((pa.data??[]) as Pantry[]);
-    if(mealRows.length){const r=await supabase.from("meal_ingredients").select("meal_id,ingredient_name,normalized_name").in("meal_id",mealRows.map(x=>x.id));if(r.error)setError(r.error.message);else setIngredients((r.data??[]) as Ingredient[])}
+    if(mealRows.length){const r=await supabase.from("meal_ingredients").select("meal_id,ingredient_name,normalized_name,quantity,unit,notes,optional").in("meal_id",mealRows.map(x=>x.id));if(r.error)setError(r.error.message);else setIngredients((r.data??[]) as Ingredient[])}
     setLoading(false);
   }
 
   const byMeal=useMemo(()=>{const map=new Map<string,Ingredient[]>();for(const i of ingredients)map.set(i.meal_id,[...(map.get(i.meal_id)??[]),i]);return map},[ingredients]);
   const pantryNames=useMemo(()=>pantry.flatMap(p=>[norm(p.item_name),norm(p.normalized_name)]).filter(Boolean),[pantry]);
+  const viewMeal=useMemo(()=>meals.find(m=>m.id===viewMealId)??null,[meals,viewMealId]);
+  const viewIngredients=useMemo(()=>viewMealId?(byMeal.get(viewMealId)??[]):[],[byMeal,viewMealId]);
 
   function allowed(meal:Meal){
     if(meal.do_not_suggest)return false;
@@ -93,6 +96,19 @@ export default function MealWiseWeeklyPlanner({householdId}:{householdId:string}
       <label>Takeout nights<input type="number" min={0} max={7} value={takeout} onChange={e=>setTakeout(Number(e.target.value))} /></label>
     </div><div className="mw-generator-note"><strong>Generator rules:</strong> excluded meals, allergies/dislikes and cooking-time limits are respected. Favorites, pantry overlap and matching diet tags score higher.</div><button className="mw-primary">Generate Weekly Plan</button></form>
     {error&&<div className="mw-alert error">{error}</div>}{message&&<div className="mw-alert success">{message}</div>}
-    {plan.length>0&&<div className="mw-saved-section"><div className="mw-feature-title"><div><h3>Generated week</h3><p>{plan.filter(x=>x.kind==="meal"&&x.selected).length} selected recipe dinner(s)</p></div><button className="mw-primary" disabled={busy} onClick={save}>{busy?"Saving…":"Save Weekly Plan"}</button></div><div className="mw-week-grid">{Array.from({length:7},(_,day)=>{const date=addDays(weekStart,day),entries=plan.filter(x=>x.date===date);return <section className="mw-day-card" key={date}><h4>{new Date(`${date}T12:00:00`).toLocaleDateString(undefined,{weekday:"long",month:"short",day:"numeric"})}</h4>{entries.length?entries.map((entry,i)=><article className={`mw-plan-meal ${entry.selected?"":"mw-plan-removed"}`} key={`${entry.date}-${i}`}><div><span className="mw-slot">{entry.slot}</span><strong>{entry.name}</strong>{entry.pantryMatches>0&&<small>{entry.pantryMatches} pantry match(es)</small>}</div>{entry.kind==="meal"&&<div className="mw-plan-actions"><button type="button" className="mw-secondary" onClick={()=>setPlan(p=>p.map((x,j)=>j===plan.indexOf(entry)?{...x,selected:!x.selected}:x))}>{entry.selected?"Remove":"Keep"}</button><button type="button" className="mw-secondary" onClick={()=>swap(plan.indexOf(entry))}>Swap</button></div>}</article>):<p className="mw-day-empty">No dinner planned</p>}</section>})}</div></div>}
+    {plan.length>0&&<div className="mw-saved-section"><div className="mw-feature-title"><div><h3>Generated week</h3><p>{plan.filter(x=>x.kind==="meal"&&x.selected).length} selected recipe dinner(s)</p></div><button className="mw-primary" disabled={busy} onClick={save}>{busy?"Saving…":"Save Weekly Plan"}</button></div><div className="mw-week-grid">{Array.from({length:7},(_,day)=>{const date=addDays(weekStart,day),entries=plan.filter(x=>x.date===date);return <section className="mw-day-card" key={date}><h4>{new Date(`${date}T12:00:00`).toLocaleDateString(undefined,{weekday:"long",month:"short",day:"numeric"})}</h4>{entries.length?entries.map((entry,i)=><article className={`mw-plan-meal ${entry.selected?"":"mw-plan-removed"}`} key={`${entry.date}-${i}`}><div><span className="mw-slot">{entry.slot}</span>{entry.kind==="meal"&&entry.mealId
+  ? <button type="button" className="mw-recipe-link" onClick={()=>setViewMealId(entry.mealId)}>{entry.name}<span>View recipe</span></button>
+  : <strong>{entry.name}</strong>}
+{entry.pantryMatches>0&&<small>{entry.pantryMatches} pantry match(es)</small>}</div>{entry.kind==="meal"&&<div className="mw-plan-actions"><button type="button" className="mw-secondary" onClick={()=>setPlan(p=>p.map((x,j)=>j===plan.indexOf(entry)?{...x,selected:!x.selected}:x))}>{entry.selected?"Remove":"Keep"}</button><button type="button" className="mw-secondary" onClick={()=>swap(plan.indexOf(entry))}>Swap</button></div>}</article>):<p className="mw-day-empty">No dinner planned</p>}</section>})}</div></div>}
+    {viewMeal&&<div className="mw-recipe-viewer-backdrop" role="presentation" onClick={()=>setViewMealId(null)}>
+      <section className="mw-recipe-viewer" role="dialog" aria-modal="true" aria-label={viewMeal.name} onClick={e=>e.stopPropagation()}>
+        <div className="mw-recipe-viewer-head"><div><span className="mw-slot">Recipe</span><h3>{viewMeal.name}</h3></div><button type="button" className="mw-secondary" onClick={()=>setViewMealId(null)}>Close</button></div>
+        <div className="mw-meta"><span>{viewMeal.servings} serving{viewMeal.servings===1?"":"s"}</span>{(viewMeal.prep_minutes||viewMeal.cook_minutes)&&<span>{(viewMeal.prep_minutes??0)+(viewMeal.cook_minutes??0)} min</span>}</div>
+        {viewMeal.description&&<p className="mw-recipe-description">{viewMeal.description}</p>}
+        <div className="mw-recipe-viewer-section"><h4>Ingredients</h4><div className="mw-recipe-ingredients">{viewIngredients.map((ingredient,i)=><div key={`${ingredient.ingredient_name}-${i}`}><strong>{ingredient.ingredient_name}</strong><span>{[ingredient.quantity,ingredient.unit].filter(v=>v!==null&&v!==undefined&&String(v).trim()!=="").join(" ")||"As needed"}{ingredient.optional?" · optional":""}{ingredient.notes?` · ${ingredient.notes}`:""}</span></div>)}</div></div>
+        <div className="mw-recipe-viewer-section"><h4>Instructions</h4><p className="mw-recipe-instructions">{viewMeal.instructions||"No instructions were saved for this recipe."}</p></div>
+        {viewMeal.source_url&&<a className="mw-primary mw-recipe-source" href={viewMeal.source_url} target="_blank" rel="noreferrer">Open original recipe</a>}
+      </section>
+    </div>}
   </div>;
 }
