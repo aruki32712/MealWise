@@ -30,6 +30,8 @@ type PantryRow = {
   item_name: string;
   quantity: number | null;
   unit: string | null;
+  container_size: number | null;
+  container_unit: string | null;
   storage_location: "pantry" | "refrigerator" | "freezer" | "other";
   brand: string | null;
   expires_on: string | null;
@@ -220,6 +222,8 @@ export function MyPantry({ householdId }: { householdId: string }) {
   const [itemName, setItemName] = useState("");
   const [quantity, setQuantity] = useState("");
   const [unit, setUnit] = useState("");
+  const [containerSize, setContainerSize] = useState("");
+  const [containerUnit, setContainerUnit] = useState("");
   const [location, setLocation] = useState<PantryRow["storage_location"]>("pantry");
   const [brand, setBrand] = useState("");
   const [expiresOn, setExpiresOn] = useState("");
@@ -233,19 +237,19 @@ export function MyPantry({ householdId }: { householdId: string }) {
 
   async function loadPantry() {
     const { data, error: loadError } = await supabase.from("pantry_items")
-      .select("id,item_name,quantity,unit,storage_location,brand,expires_on,do_not_substitute,notes")
+      .select("id,item_name,quantity,unit,container_size,container_unit,storage_location,brand,expires_on,do_not_substitute,notes")
       .eq("household_id", householdId).order("storage_location", { ascending: true }).order("item_name", { ascending: true });
     if (loadError) setError(loadError.message); else setItems((data ?? []) as PantryRow[]);
   }
 
   function resetPantryForm() {
-    setEditingId(null); setItemName(""); setQuantity(""); setUnit(""); setLocation("pantry");
+    setEditingId(null); setItemName(""); setQuantity(""); setUnit(""); setContainerSize(""); setContainerUnit(""); setLocation("pantry");
     setBrand(""); setExpiresOn(""); setDoNotSubstitute(false); setNotes(""); setMessage(""); setError("");
   }
 
   function editPantry(item: PantryRow) {
     setEditingId(item.id); setItemName(item.item_name); setQuantity(item.quantity == null ? "" : String(item.quantity));
-    setUnit(item.unit ?? ""); setLocation(item.storage_location); setBrand(item.brand ?? "");
+    setUnit(item.unit ?? ""); setContainerSize(item.container_size == null ? "" : String(item.container_size)); setContainerUnit(item.container_unit ?? ""); setLocation(item.storage_location); setBrand(item.brand ?? "");
     setExpiresOn(item.expires_on ?? ""); setDoNotSubstitute(item.do_not_substitute); setNotes(item.notes ?? "");
     setError(""); setMessage(""); window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -254,9 +258,12 @@ export function MyPantry({ householdId }: { householdId: string }) {
     event.preventDefault(); setBusy(true); setError(""); setMessage("");
     if (!itemName.trim()) { setError("Enter an item name."); setBusy(false); return; }
     const parsedPantryMeasure = parseMeasure([quantity, unit].filter(Boolean).join(" "));
+    const parsedContainerMeasure = parseMeasure([containerSize, containerUnit].filter(Boolean).join(" "));
     const payload = {
       household_id: householdId, item_name: itemName.trim(), normalized_name: itemName.trim().toLowerCase(),
-      quantity: parsedPantryMeasure.quantity, unit: parsedPantryMeasure.unit ?? normalizeUnit(unit), storage_location: location,
+      quantity: parsedPantryMeasure.quantity, unit: parsedPantryMeasure.unit ?? normalizeUnit(unit),
+      container_size: parsedContainerMeasure.quantity, container_unit: parsedContainerMeasure.unit ?? normalizeUnit(containerUnit),
+      storage_location: location,
       brand: brand.trim() || null, expires_on: expiresOn || null, do_not_substitute: doNotSubstitute,
       notes: notes.trim() || null, updated_at: new Date().toISOString(),
     };
@@ -275,13 +282,15 @@ export function MyPantry({ householdId }: { householdId: string }) {
   }
 
   return <div className="mw-feature">
-    <div className="mw-feature-title"><div><h2>My Pantry</h2><p>Tell MealWise what you already have. Compatible units such as oz↔lb, g↔kg, tsp↔tbsp↔cups, mL↔L, and each↔dozen convert automatically.</p></div>{editingId && <button type="button" className="mw-secondary" onClick={resetPantryForm}>New item</button>}</div>
+    <div className="mw-feature-title"><div><h2>My Pantry</h2><p>Tell MealWise what you already have. Compatible units such as oz↔lb, g↔kg, tsp↔tbsp↔cups, mL↔L, and each↔dozen convert automatically. For bottles, jars, cans, bags, and boxes, add the container size so MealWise can convert what is inside.</p></div>{editingId && <button type="button" className="mw-secondary" onClick={resetPantryForm}>New item</button>}</div>
     <form className="mw-form mw-feature-form" onSubmit={savePantryItem}>
       <div className="mw-grid">
         <label>Item<input value={itemName} onChange={(e) => setItemName(e.target.value)} placeholder="Olive oil" required /></label>
         <label>Brand<input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="Optional" /></label>
         <label>Quantity<input inputMode="decimal" value={quantity} onChange={(e) => setQuantity(e.target.value)} placeholder="1, 1/2, 1 1/2" /></label>
-        <label>Unit<input value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="bottle, oz, lb, cups" /></label>
+        <label>Unit<input value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="bottle, jar, oz, lb, cups" /></label>
+        <label>Container size<input inputMode="decimal" value={containerSize} onChange={(e) => setContainerSize(e.target.value)} placeholder="16.9" /></label>
+        <label>Container size unit<input value={containerUnit} onChange={(e) => setContainerUnit(e.target.value)} placeholder="fl oz, oz, mL, g" /></label>
         <label>Stored in<select value={location} onChange={(e) => setLocation(e.target.value as PantryRow["storage_location"])}><option value="pantry">Pantry</option><option value="refrigerator">Refrigerator</option><option value="freezer">Freezer</option><option value="other">Other</option></select></label>
         <label>Expiration date<input type="date" value={expiresOn} onChange={(e) => setExpiresOn(e.target.value)} /></label>
       </div>
@@ -291,7 +300,7 @@ export function MyPantry({ householdId }: { householdId: string }) {
       <button className="mw-primary" disabled={busy}>{busy ? "Saving…" : editingId ? "Update Pantry Item" : "Add to Pantry"}</button>
     </form>
     <div className="mw-saved-section"><h3>Current inventory</h3>{!items.length ? <div className="mw-empty">Your pantry is empty in MealWise.</div> : <div className="mw-list">{items.map((item) => <article className="mw-list-card" key={item.id}>
-      <div className="mw-list-main"><div className="mw-list-title"><strong>{item.item_name}</strong>{item.do_not_substitute && <span className="mw-lock">Do not substitute</span>}</div><div className="mw-meta"><span>{item.storage_location}</span>{(item.quantity != null || item.unit) && <span>{item.quantity ?? ""} {item.unit ?? ""}</span>}{item.brand && <span>{item.brand}</span>}{item.expires_on && <span>Expires {item.expires_on}</span>}</div></div>
+      <div className="mw-list-main"><div className="mw-list-title"><strong>{item.item_name}</strong>{item.do_not_substitute && <span className="mw-lock">Do not substitute</span>}</div><div className="mw-meta"><span>{item.storage_location}</span>{(item.quantity != null || item.unit) && <span>{item.quantity ?? ""} {item.unit ?? ""}</span>}{item.container_size != null && item.container_unit && <span>{item.container_size} {item.container_unit} each</span>}{item.brand && <span>{item.brand}</span>}{item.expires_on && <span>Expires {item.expires_on}</span>}</div></div>
       <div className="mw-card-actions"><button type="button" className="mw-secondary" onClick={() => editPantry(item)}>Edit</button><button type="button" className="mw-danger" onClick={() => deletePantryItem(item)}>Remove</button></div>
     </article>)}</div>}</div>
   </div>;
