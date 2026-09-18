@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { supabase } from "./lib/supabase";
+import { normalizeUnit } from "./lib/measurements";
 
 type IngredientDraft = {
   ingredient_name: string;
@@ -147,7 +148,7 @@ export function MyRecipes({ householdId }: { householdId: string }) {
       ingredient_name: i.ingredient_name.trim(),
       normalized_name: i.ingredient_name.trim().toLowerCase(),
       quantity: i.quantity ? Number(i.quantity) : null,
-      unit: i.unit.trim() || null,
+      unit: normalizeUnit(i.unit),
       category: i.category.trim() || null,
       optional: i.optional,
       notes: i.notes.trim() || null,
@@ -251,7 +252,7 @@ export function MyPantry({ householdId }: { householdId: string }) {
     if (!itemName.trim()) { setError("Enter an item name."); setBusy(false); return; }
     const payload = {
       household_id: householdId, item_name: itemName.trim(), normalized_name: itemName.trim().toLowerCase(),
-      quantity: quantity ? Number(quantity) : null, unit: unit.trim() || null, storage_location: location,
+      quantity: quantity ? Number(quantity) : null, unit: normalizeUnit(unit), storage_location: location,
       brand: brand.trim() || null, expires_on: expiresOn || null, do_not_substitute: doNotSubstitute,
       notes: notes.trim() || null, updated_at: new Date().toISOString(),
     };
