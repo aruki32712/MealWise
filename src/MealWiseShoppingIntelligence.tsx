@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "./lib/supabase";
+import { convertQuantity, measureGroupKey, normalizeUnit, roundMeasure, unitsCompatible } from "./lib/measurements";
 
 type Household = { weekly_budget:number|null; zip_code:string|null; latitude:number|null; longitude:number|null; shopping_radius_miles:number };
 type Preferences = { min_savings_for_extra_stop:number; preferred_stop_limit:number; excluded_stores:string[] };
@@ -17,7 +18,7 @@ const norm=(v:string|null|undefined)=>(v??"").trim().toLowerCase().replace(/\s+/
 const money=(v:number|null)=>v==null?"—":new Intl.NumberFormat(undefined,{style:"currency",currency:"USD"}).format(v);
 const round2=(v:number)=>Math.round(v*100)/100;
 function sameFood(a:string,b:string){const x=norm(a),y=norm(b);return Boolean(x&&y&&(x===y||x.includes(y)||y.includes(x)))}
-function unitsMatch(a:string|null,b:string|null){return Boolean(norm(a))&&norm(a)===norm(b)}
+function unitsMatch(a:string|null,b:string|null){return unitsCompatible(a,b)}
 function haversine(lat1:number,lon1:number,lat2:number,lon2:number){const r=(n:number)=>n*Math.PI/180,R=3958.8,dLat=r(lat2-lat1),dLon=r(lon2-lon1);const a=Math.sin(dLat/2)**2+Math.cos(r(lat1))*Math.cos(r(lat2))*Math.sin(dLon/2)**2;return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a))}
 function combos<T>(a:T[],max:number){const out:T[][]=[];const walk=(start:number,c:T[])=>{if(c.length){out.push([...c]);if(c.length===max)return}for(let i=start;i<a.length;i++){c.push(a[i]);walk(i+1,c);c.pop()}};walk(0,[]);return out}
 
@@ -63,18 +64,51 @@ export default function MealWiseShoppingIntelligence({householdId}:{householdId:
 
   const items=useMemo<Item[]>(()=>{
     const map=new Map<string,{name:string;normalizedName:string;quantity:number|null;unit:string|null;category:string|null}>();
-    for(const i of ingredients){const n=norm(i.normalized_name||i.ingredient_name),u=norm(i.unit),key=`${n}|${u}`;const old=map.get(key);if(!old)map.set(key,{name:i.ingredient_name,normalizedName:n,quantity:i.quantity==null?null:Number(i.quantity),unit:i.unit,category:i.category});else old.quantity=old.quantity==null||i.quantity==null?null:old.quantity+Number(i.quantity)}
+    for(const i of ingredients){
+      const n=norm(i.normalized_name||i.ingredient_name), normalizedUnit=normalizeUnit(i.unit), group=measureGroupKey(normalizedUnit), key=`${n}|${group}`;
+      const incomingQty=i.quantity==null?null:Number(i.quantity);
+      const old=map.get(key);
+      if(!old){
+        map.set(key,{name:i.ingredient_name,normalizedName:n,quantity:incomingQty,unit:normalizedUnit,category:i.category});
+        continue;
+      }
+      if(old.quantity==null||incomingQty==null){old.quantity=null;continue}
+      const converted=convertQuantity(incomingQty,normalizedUnit,old.unit);
+      if(converted==null&&normalizeUnit(normalizedUnit)!==normalizeUnit(old.unit)){
+        // Keep incompatible/unknown measures separate instead of inventing a conversion.
+        const fallbackKey=`${n}|unit:${normalizedUnit??"unknown"}`;
+        const fallback=map.get(fallbackKey);
+        if(!fallback)map.set(fallbackKey,{name:i.ingredient_name,normalizedName:n,quantity:incomingQty,unit:normalizedUnit,category:i.category});
+        else fallback.quantity=fallback.quantity==null?null:fallback.quantity+incomingQty;
+      }else old.quantity+=converted??incomingQty;
+    }
     return [...map.entries()].map(([key,x])=>{
-      const matches=pantry.filter(p=>sameFood(p.normalized_name||p.item_name,x.normalizedName));let pantryUsed=0,verify=false;
-      if(x.quantity!=null){for(const p of matches){if(p.quantity!=null&&unitsMatch(p.unit,x.unit))pantryUsed+=Number(p.quantity);else verify=true}}
-      else if(matches.length)verify=true;
+      const matches=pantry.filter(p=>sameFood(p.normalized_name||p.item_name,x.normalizedName));
+      let pantryUsed=0,verify=false;
+      if(x.quantity!=null){
+        for(const p of matches){
+          if(p.quantity==null){verify=true;continue}
+          const converted=convertQuantity(Number(p.quantity),p.unit,x.unit);
+          if(converted!=null)pantryUsed+=converted;
+          else if(normalizeUnit(p.unit)===normalizeUnit(x.unit)&&x.unit!=null)pantryUsed+=Number(p.quantity);
+          else verify=true;
+        }
+      }else if(matches.length)verify=true;
+      pantryUsed=Math.min(pantryUsed,x.quantity??pantryUsed);
       const buy=x.quantity==null?null:Math.max(0,x.quantity-pantryUsed);
-      return {key,name:x.name,normalizedName:x.normalizedName,quantity:x.quantity,unit:x.unit,category:x.category,pantryUsed:round2(pantryUsed),quantityToBuy:buy==null?null:round2(buy),pantryCovered:buy===0,verifyPantry:verify};
+      return {
+        key,name:x.name,normalizedName:x.normalizedName,
+        quantity:x.quantity==null?null:roundMeasure(x.quantity,4),
+        unit:normalizeUnit(x.unit),category:x.category,
+        pantryUsed:roundMeasure(pantryUsed,4),
+        quantityToBuy:buy==null?null:roundMeasure(buy,4),
+        pantryCovered:buy===0,verifyPantry:verify
+      };
     })
   },[ingredients,pantry]);
 
   const purchaseItems=useMemo(()=>items.filter(i=>!i.pantryCovered),[items]);
-  const offerMap=useMemo(()=>{const m=new Map<string,Offer[]>();for(const item of purchaseItems){const offers:Offer[]=[];for(const row of prices){if(!sameFood(row.normalized_product_name||row.product_name,item.normalizedName))continue;const store=stores.find(s=>s.id===row.store_id);if(!store)continue;let packages=1;if(item.quantityToBuy!=null&&row.package_size!=null&&Number(row.package_size)>0&&unitsMatch(row.package_unit,item.unit))packages=Math.max(1,Math.ceil(item.quantityToBuy/Number(row.package_size)));const unitPrice=row.sale_price!=null?Number(row.sale_price):Number(row.price);offers.push({itemKey:item.key,store,row,packages,total:round2(packages*unitPrice)})}offers.sort((a,b)=>a.total-b.total);m.set(item.key,offers)}return m},[purchaseItems,prices,stores]);
+  const offerMap=useMemo(()=>{const m=new Map<string,Offer[]>();for(const item of purchaseItems){const offers:Offer[]=[];for(const row of prices){if(!sameFood(row.normalized_product_name||row.product_name,item.normalizedName))continue;const store=stores.find(s=>s.id===row.store_id);if(!store)continue;let packages=1;if(item.quantityToBuy!=null&&row.package_size!=null&&Number(row.package_size)>0){const packageInItemUnit=convertQuantity(Number(row.package_size),row.package_unit,item.unit);if(packageInItemUnit!=null&&packageInItemUnit>0)packages=Math.max(1,Math.ceil(item.quantityToBuy/packageInItemUnit));else if(normalizeUnit(row.package_unit)===normalizeUnit(item.unit))packages=Math.max(1,Math.ceil(item.quantityToBuy/Number(row.package_size)))}const unitPrice=row.sale_price!=null?Number(row.sale_price):Number(row.price);offers.push({itemKey:item.key,store,row,packages,total:round2(packages*unitPrice)})}offers.sort((a,b)=>a.total-b.total);m.set(item.key,offers)}return m},[purchaseItems,prices,stores]);
 
   const strategies=useMemo<Strategy[]>(()=>{
     const build=(allowed:Store[])=>{const offers:Offer[]=[],missing:Item[]=[];for(const item of purchaseItems){const candidates=(offerMap.get(item.key)??[]).filter(o=>allowed.some(s=>s.id===o.store.id));if(candidates.length)offers.push(candidates[0]);else missing.push(item)}const used=[...new Map(offers.map(o=>[o.store.id,o.store])).values()];return {offers,missing,stores:used,total:missing.length?null:round2(offers.reduce((s,o)=>s+o.total,0)),complete:missing.length===0}};
@@ -113,7 +147,7 @@ export default function MealWiseShoppingIntelligence({householdId}:{householdId:
   if(loading)return <div className="mw-empty">Loading Smart Basket…</div>;
   if(!plan)return <div className="mw-feature"><div className="mw-feature-title"><div><h2>Smart Basket</h2><p>Save a Weekly Plan first. Then MealWise can combine ingredients and compare store strategies.</p></div></div></div>;
   return <div className="mw-feature">
-    <div className="mw-feature-title"><div><h2>Smart Basket</h2><p>Combines selected meals, subtracts compatible pantry quantities, matches current local prices, and applies your extra-store savings rule.</p></div><button className="mw-primary" disabled={busy} onClick={saveList}>{busy?"Saving…":"Save Shopping List"}</button></div>
+    <div className="mw-feature-title"><div><h2>Smart Basket</h2><p>Combines selected meals, converts compatible recipe/pantry units, subtracts what you already have, matches package sizes, and applies your extra-store savings rule.</p></div><button className="mw-primary" disabled={busy} onClick={saveList}>{busy?"Saving…":"Save Shopping List"}</button></div>
     <div className="mw-shopping-summary"><div><span>Required items</span><strong>{items.length}</strong></div><div><span>Pantry-covered</span><strong>{items.filter(i=>i.pantryCovered).length}</strong></div><div><span>Budget</span><strong>{money(budget==null?null:Number(budget))}</strong></div><div><span>Selected total</span><strong>{money(selected?.total??null)}</strong></div></div>
     {!household?.zip_code&&household?.latitude==null&&<div className="mw-alert error">Add a ZIP code or location in Setup before MealWise compares local stores.</div>}
     {stores.length===0&&<div className="mw-generator-note"><strong>No verified local stores yet.</strong> Smart Basket will not invent store availability or prices.</div>}
