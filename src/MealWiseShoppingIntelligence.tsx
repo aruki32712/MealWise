@@ -7,7 +7,7 @@ type Preferences = { min_savings_for_extra_stop:number; preferred_stop_limit:num
 type Plan = { id:string; week_start:string; budget_target:number|null };
 type PlanMeal = { meal_id:string; selected:boolean };
 type Ingredient = { meal_id:string; ingredient_name:string; normalized_name:string|null; quantity:number|null; unit:string|null; category:string|null; optional:boolean };
-type PantryItem = { item_name:string; normalized_name:string|null; quantity:number|null; unit:string|null };
+type PantryItem = { item_name:string; normalized_name:string|null; quantity:number|null; unit:string|null; container_size:number|null; container_unit:string|null };
 type Store = { id:string; retailer_name:string; location_name:string|null; zip_code:string|null; latitude:number|null; longitude:number|null };
 type Price = { id:string; store_id:string; product_name:string; normalized_product_name:string|null; package_size:number|null; package_unit:string|null; price:number; sale_price:number|null; observed_at:string; expires_at:string|null };
 type Item = { key:string; name:string; normalizedName:string; quantity:number|null; unit:string|null; category:string|null; pantryUsed:number; quantityToBuy:number|null; pantryCovered:boolean; verifyPantry:boolean };
@@ -57,7 +57,7 @@ export default function MealWiseShoppingIntelligence({householdId}:{householdId:
       supabase.from("households").select("weekly_budget,zip_code,latitude,longitude,shopping_radius_miles").eq("id",householdId).single(),
       supabase.from("household_preferences").select("min_savings_for_extra_stop,preferred_stop_limit,excluded_stores").eq("household_id",householdId).maybeSingle(),
       supabase.from("meal_plans").select("id,week_start,budget_target").eq("household_id",householdId).eq("status","active").order("week_start",{ascending:false}).limit(1).maybeSingle(),
-      supabase.from("pantry_items").select("item_name,normalized_name,quantity,unit").eq("household_id",householdId),
+      supabase.from("pantry_items").select("item_name,normalized_name,quantity,unit,container_size,container_unit").eq("household_id",householdId),
       supabase.from("stores").select("id,retailer_name,location_name,zip_code,latitude,longitude").eq("active",true).limit(500),
     ]);
     const first=h.error||p.error||pl.error||pa.error||st.error;if(first){setError(first.message);setLoading(false);return}
@@ -107,7 +107,13 @@ export default function MealWiseShoppingIntelligence({householdId}:{householdId:
           const converted=convertQuantity(Number(p.quantity),p.unit,x.unit);
           if(converted!=null)pantryUsed+=converted;
           else if(normalizeUnit(p.unit)===normalizeUnit(x.unit)&&x.unit!=null)pantryUsed+=Number(p.quantity);
-          else verify=true;
+          else if(p.container_size!=null&&p.container_unit){
+            const totalInside=Number(p.quantity)*Number(p.container_size);
+            const convertedContainer=convertQuantity(totalInside,p.container_unit,x.unit);
+            if(convertedContainer!=null)pantryUsed+=convertedContainer;
+            else if(normalizeUnit(p.container_unit)===normalizeUnit(x.unit)&&x.unit!=null)pantryUsed+=totalInside;
+            else verify=true;
+          }else verify=true;
         }
       }else if(matches.length)verify=true;
       pantryUsed=Math.min(pantryUsed,x.quantity??pantryUsed);
