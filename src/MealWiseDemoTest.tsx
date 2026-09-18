@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "./lib/supabase";
+import { convertQuantity, parseMeasure } from "./lib/measurements";
 
 type LatestRun = {
   status: "passed" | "failed" | "error";
@@ -55,6 +56,7 @@ export default function MealWiseDemoTest() {
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [measurementTest, setMeasurementTest] = useState<{ passed:boolean; assertions:Record<string,boolean>; actual:Record<string,unknown> } | null>(null);
 
   useEffect(() => {
     void loadScenarios();
@@ -81,6 +83,37 @@ export default function MealWiseDemoTest() {
     }
   }
 
+  function runMeasurementConversionTest() {
+    const mixed = parseMeasure("1 1/2 cups");
+    const unicode = parseMeasure("½ cup");
+    const lbToOz = convertQuantity(1, "lb", "oz");
+    const cupToFlOz = convertQuantity(1, "cup", "fl oz");
+    const tbspToTsp = convertQuantity(2, "tbsp", "tsp");
+    const pantryEightOzInLb = convertQuantity(8, "oz", "lb");
+    const remainingLb = pantryEightOzInLb == null ? null : Math.max(0, 1 - pantryEightOzInLb);
+    const packageEightOzInLb = convertQuantity(8, "oz", "lb");
+    const packages = remainingLb != null && packageEightOzInLb ? Math.ceil(remainingLb / packageEightOzInLb) : null;
+
+    const close = (a:number|null,b:number) => a != null && Math.abs(a-b) < 0.0001;
+    const assertions = {
+      parses_mixed_fraction: mixed.quantity === 1.5 && mixed.unit === "cup",
+      parses_unicode_fraction: unicode.quantity === 0.5 && unicode.unit === "cup",
+      pound_to_ounces: close(lbToOz,16),
+      cup_to_fluid_ounces: close(cupToFlOz,8),
+      tablespoons_to_teaspoons: close(tbspToTsp,6),
+      pantry_subtraction_across_units: close(remainingLb,0.5),
+      package_math_across_units: packages === 1,
+    };
+    const passed = Object.values(assertions).every(Boolean);
+    const result = {
+      passed,
+      assertions,
+      actual: { mixed, unicode, lbToOz, cupToFlOz, tbspToTsp, pantryEightOzInLb, remainingLb, packages },
+    };
+    setMeasurementTest(result);
+    return result;
+  }
+
   async function runAll() {
     setBusy(true);
     setError("");
@@ -90,9 +123,11 @@ export default function MealWiseDemoTest() {
       const data = await invoke("run_all");
       setSuite(data?.suite ?? null);
       const summary = data?.suite;
-      setMessage(summary?.passed
-        ? `All ${summary.total_scenarios} permanent MealWise scenarios passed.`
-        : `${summary?.failed_scenarios ?? 0} scenario(s) failed. Open the failed scenario below.`);
+      const measurement = runMeasurementConversionTest();
+      const allPassed = Boolean(summary?.passed) && measurement.passed;
+      setMessage(allPassed
+        ? `All ${(summary?.total_scenarios ?? 7) + 1} MealWise regression tests passed, including pantry/unit conversion.`
+        : `${summary?.failed_scenarios ?? 0} backend scenario(s) failed${measurement.passed ? "" : " and the pantry/unit conversion test failed"}. Open the failed test below.`);
       await loadScenarios();
     } catch (e: any) {
       setError(e?.message ?? "Unable to run the test suite.");
@@ -130,11 +165,11 @@ export default function MealWiseDemoTest() {
         <h2>Permanent Demo / Test Lab</h2>
         <p>Runs controlled Supabase fixtures without creating fake customer accounts or using live retailer prices.</p>
       </div>
-      <button className="mw-primary" type="button" disabled={busy} onClick={runAll}>{busy ? "Running…" : "Run All 7 Tests"}</button>
+      <button className="mw-primary" type="button" disabled={busy} onClick={runAll}>{busy ? "Running…" : "Run All 8 Tests"}</button>
     </div>
 
     <div className="mw-test-note">
-      <strong>Internal only.</strong> These prices are fixed mock prices used to catch regressions in pantry subtraction, package math, diet/allergy rules, store-stop logic, locked meals, and Budget Rescue.
+      <strong>Internal only.</strong> These prices are fixed mock prices used to catch regressions in pantry subtraction, unit conversion, package math, diet/allergy rules, store-stop logic, locked meals, and Budget Rescue.
     </div>
 
     {error && <div className="mw-alert error">{error}</div>}
@@ -148,6 +183,25 @@ export default function MealWiseDemoTest() {
     </div>}
 
     <div className="mw-test-grid">
+      <article className="mw-test-card">
+        <div className="mw-test-card-head">
+          <div><span className="mw-test-category">Measurement Conversion</span><h3>Pantry + Package Unit Conversion</h3></div>
+          <span className={`mw-test-status ${measurementTest ? (measurementTest.passed ? "passed" : "failed") : "not-run"}`}>
+            {measurementTest ? (measurementTest.passed ? "Passed" : "Failed") : "Not run"}
+          </span>
+        </div>
+        <p>Verifies mixed fractions plus lb↔oz, cup↔fl oz, tbsp↔tsp, pantry subtraction, and package counts.</p>
+        <button className="mw-secondary" type="button" disabled={busy} onClick={() => runMeasurementConversionTest()}>Run This Scenario</button>
+        {measurementTest && <div className="mw-test-detail">
+          <strong>{measurementTest.passed ? "Passed assertions" : "Assertion details"}</strong>
+          <div className="mw-test-assertions">
+            {Object.entries(measurementTest.assertions).map(([key,value]) =>
+              <span key={key} className={value ? "pass" : "fail"}>{value ? "✓" : "✕"} {key.replaceAll("_"," ")}</span>
+            )}
+          </div>
+          <details><summary>View calculated result</summary><pre>{JSON.stringify(measurementTest.actual,null,2)}</pre></details>
+        </div>}
+      </article>
       {scenarios.map((scenario) => {
         const suiteResult = suiteBySlug.get(scenario.slug);
         const latest = scenario.latest_run;
