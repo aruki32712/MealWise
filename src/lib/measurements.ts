@@ -32,11 +32,15 @@ const unitDefs: UnitDef[] = [
   { canonical: "bunch", dimension: "count", toBase: 1, aliases: ["bunch","bunches"] },
   { canonical: "clove", dimension: "count", toBase: 1, aliases: ["clove","cloves"] },
   { canonical: "slice", dimension: "count", toBase: 1, aliases: ["slice","slices"] },
-  { canonical: "piece", dimension: "count", toBase: 1, aliases: ["piece","pieces","pc","pcs"] },
+  { canonical: "dozen", dimension: "count", toBase: 12, aliases: ["dozen","dozens","doz"] },
   { canonical: "stalk", dimension: "count", toBase: 1, aliases: ["stalk","stalks"] },
   { canonical: "sprig", dimension: "count", toBase: 1, aliases: ["sprig","sprigs"] },
   { canonical: "head", dimension: "count", toBase: 1, aliases: ["head","heads"] },
-  { canonical: "each", dimension: "count", toBase: 1, aliases: ["each","ea","whole","item","items"] },
+  { canonical: "pinch", dimension: "count", toBase: 1, aliases: ["pinch","pinches"] },
+  { canonical: "dash", dimension: "count", toBase: 1, aliases: ["dash","dashes"] },
+  { canonical: "handful", dimension: "count", toBase: 1, aliases: ["handful","handfuls"] },
+  { canonical: "stick", dimension: "count", toBase: 1, aliases: ["stick","sticks"] },
+  { canonical: "each", dimension: "count", toBase: 1, aliases: ["each","ea","whole","item","items","piece","pieces","pc","pcs"] },
 ];
 
 const aliasMap = new Map<string, UnitDef>();
@@ -114,7 +118,10 @@ export function convertQuantity(
 
   const fromDef = unitDef(from), toDef = unitDef(to);
   if (!fromDef || !toDef || fromDef.dimension !== toDef.dimension) return null;
-  if (fromDef.dimension === "count") return null;
+  if (fromDef.dimension === "count") {
+    const genericCount = new Set(["each", "dozen"]);
+    if (!genericCount.has(fromDef.canonical) || !genericCount.has(toDef.canonical)) return null;
+  }
   return quantity * fromDef.toBase / toDef.toBase;
 }
 
