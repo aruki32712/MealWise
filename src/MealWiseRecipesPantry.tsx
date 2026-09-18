@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { supabase } from "./lib/supabase";
-import { normalizeUnit } from "./lib/measurements";
+import { normalizeUnit, parseMeasure } from "./lib/measurements";
 
 type IngredientDraft = {
   ingredient_name: string;
@@ -143,16 +143,19 @@ export function MyRecipes({ householdId }: { householdId: string }) {
       mealId = data.id;
     }
 
-    const ingredientPayload = validIngredients.map((i) => ({
-      meal_id: mealId,
-      ingredient_name: i.ingredient_name.trim(),
-      normalized_name: i.ingredient_name.trim().toLowerCase(),
-      quantity: i.quantity ? Number(i.quantity) : null,
-      unit: normalizeUnit(i.unit),
-      category: i.category.trim() || null,
-      optional: i.optional,
-      notes: i.notes.trim() || null,
-    }));
+    const ingredientPayload = validIngredients.map((i) => {
+      const parsed = parseMeasure([i.quantity, i.unit].filter(Boolean).join(" "));
+      return {
+        meal_id: mealId,
+        ingredient_name: i.ingredient_name.trim(),
+        normalized_name: i.ingredient_name.trim().toLowerCase(),
+        quantity: parsed.quantity,
+        unit: parsed.unit ?? normalizeUnit(i.unit),
+        category: i.category.trim() || null,
+        optional: i.optional,
+        notes: i.notes.trim() || null,
+      };
+    });
 
     const { error: ingredientError } = await supabase.from("meal_ingredients").insert(ingredientPayload);
     if (ingredientError) { setError(ingredientError.message); setBusy(false); return; }
@@ -187,12 +190,12 @@ export function MyRecipes({ householdId }: { householdId: string }) {
       </div>
       <label>Description<textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Short description of the meal" /></label>
       <div className="mw-subsection">
-        <div className="mw-feature-title"><div><h3>Ingredients</h3><p>These feed directly into the future shopping list.</p></div><button type="button" className="mw-secondary" onClick={() => setIngredients((current) => [...current, emptyIngredient()])}>+ Add ingredient</button></div>
+        <div className="mw-feature-title"><div><h3>Ingredients</h3><p>These feed directly into the shopping list. MealWise understands decimals and kitchen fractions.</p></div><button type="button" className="mw-secondary" onClick={() => setIngredients((current) => [...current, emptyIngredient()])}>+ Add ingredient</button></div>
         <div className="mw-ingredient-list">{ingredients.map((ingredient, index) => <div className="mw-ingredient-card" key={index}>
           <div className="mw-ingredient-head"><strong>Ingredient {index + 1}</strong>{ingredients.length > 1 && <button type="button" className="mw-link-danger" onClick={() => setIngredients((current) => current.filter((_, i) => i !== index))}>Remove</button>}</div>
           <div className="mw-grid mw-grid-ingredients">
             <label>Item<input value={ingredient.ingredient_name} onChange={(e) => updateIngredient(index, "ingredient_name", e.target.value)} placeholder="Chicken breast" /></label>
-            <label>Quantity<input type="number" min={0} step="0.01" value={ingredient.quantity} onChange={(e) => updateIngredient(index, "quantity", e.target.value)} placeholder="2" /></label>
+            <label>Quantity<input inputMode="decimal" value={ingredient.quantity} onChange={(e) => updateIngredient(index, "quantity", e.target.value)} placeholder="2, 1/2, 1 1/2" /></label>
             <label>Unit<input value={ingredient.unit} onChange={(e) => updateIngredient(index, "unit", e.target.value)} placeholder="lb, cups, oz" /></label>
             <label>Category<input value={ingredient.category} onChange={(e) => updateIngredient(index, "category", e.target.value)} placeholder="Meat, produce" /></label>
           </div>
@@ -250,9 +253,10 @@ export function MyPantry({ householdId }: { householdId: string }) {
   async function savePantryItem(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError(""); setMessage("");
     if (!itemName.trim()) { setError("Enter an item name."); setBusy(false); return; }
+    const parsedPantryMeasure = parseMeasure([quantity, unit].filter(Boolean).join(" "));
     const payload = {
       household_id: householdId, item_name: itemName.trim(), normalized_name: itemName.trim().toLowerCase(),
-      quantity: quantity ? Number(quantity) : null, unit: normalizeUnit(unit), storage_location: location,
+      quantity: parsedPantryMeasure.quantity, unit: parsedPantryMeasure.unit ?? normalizeUnit(unit), storage_location: location,
       brand: brand.trim() || null, expires_on: expiresOn || null, do_not_substitute: doNotSubstitute,
       notes: notes.trim() || null, updated_at: new Date().toISOString(),
     };
@@ -271,12 +275,12 @@ export function MyPantry({ householdId }: { householdId: string }) {
   }
 
   return <div className="mw-feature">
-    <div className="mw-feature-title"><div><h2>My Pantry</h2><p>Tell MealWise what you already have so future plans buy less and waste less.</p></div>{editingId && <button type="button" className="mw-secondary" onClick={resetPantryForm}>New item</button>}</div>
+    <div className="mw-feature-title"><div><h2>My Pantry</h2><p>Tell MealWise what you already have. Compatible units such as oz↔lb, g↔kg, tsp↔tbsp↔cups, mL↔L, and each↔dozen convert automatically.</p></div>{editingId && <button type="button" className="mw-secondary" onClick={resetPantryForm}>New item</button>}</div>
     <form className="mw-form mw-feature-form" onSubmit={savePantryItem}>
       <div className="mw-grid">
         <label>Item<input value={itemName} onChange={(e) => setItemName(e.target.value)} placeholder="Olive oil" required /></label>
         <label>Brand<input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="Optional" /></label>
-        <label>Quantity<input type="number" min={0} step="0.01" value={quantity} onChange={(e) => setQuantity(e.target.value)} placeholder="1" /></label>
+        <label>Quantity<input inputMode="decimal" value={quantity} onChange={(e) => setQuantity(e.target.value)} placeholder="1, 1/2, 1 1/2" /></label>
         <label>Unit<input value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="bottle, oz, lb, cups" /></label>
         <label>Stored in<select value={location} onChange={(e) => setLocation(e.target.value as PantryRow["storage_location"])}><option value="pantry">Pantry</option><option value="refrigerator">Refrigerator</option><option value="freezer">Freezer</option><option value="other">Other</option></select></label>
         <label>Expiration date<input type="date" value={expiresOn} onChange={(e) => setExpiresOn(e.target.value)} /></label>
