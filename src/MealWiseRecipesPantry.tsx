@@ -290,7 +290,7 @@ export function MyPantry({ householdId }: { householdId: string }) {
         <label>Quantity<input inputMode="decimal" value={quantity} onChange={(e) => setQuantity(e.target.value)} placeholder="1, 1/2, 1 1/2" /></label>
         <label>Unit<input value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="bottle, jar, oz, lb, cups" /></label>
         <label>Container size<input inputMode="decimal" value={containerSize} onChange={(e) => setContainerSize(e.target.value)} placeholder="16.9" /></label>
-        <label>Container size unit<input value={containerUnit} onChange={(e) => setContainerUnit(e.target.value)} placeholder="fl oz, oz, mL, g" /></label>
+        <label>Container size unit<input value={containerUnit} onChange={(e) => setContainerUnit(e.target.value)} placeholder="fl oz for liquids; oz for weight; mL, g" /><small>Use <strong>fl oz</strong> for liquid volume. Plain <strong>oz</strong> is weight.</small></label>
         <label>Stored in<select value={location} onChange={(e) => setLocation(e.target.value as PantryRow["storage_location"])}><option value="pantry">Pantry</option><option value="refrigerator">Refrigerator</option><option value="freezer">Freezer</option><option value="other">Other</option></select></label>
         <label>Expiration date<input type="date" value={expiresOn} onChange={(e) => setExpiresOn(e.target.value)} /></label>
       </div>
