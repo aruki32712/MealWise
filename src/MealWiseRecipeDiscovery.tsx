@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { supabase } from "./lib/supabase";
-import { normalizeUnit, parseMeasure } from "./lib/measurements";
+import { normalizeUnit, parseMeasure } from "./lib/measurements";\nimport MealWiseNutritionLookup from "./MealWiseNutritionLookup";
 
 type PreferenceSummary = {
   dietary_plan: string | null;
@@ -299,7 +299,7 @@ export default function MealWiseRecipeDiscovery({ householdId }: { householdId: 
       })}
     </div>}
 
-    <div className="mw-provider-attribution">
+    <MealWiseNutritionLookup />\n\n    <div className="mw-provider-attribution">
       Recipe data powered by <a href="https://www.themealdb.com/" target="_blank" rel="noreferrer">TheMealDB</a>. MealWise applies its own ingredient-based household screening.
     </div>
   </div>;
