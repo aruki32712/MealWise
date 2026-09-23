@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "./lib/supabase";
 import { convertQuantity, measureGroupKey, normalizeUnit, roundMeasure, unitsCompatible } from "./lib/measurements";
 import MealWiseOpenFoodLookup from "./MealWiseOpenFoodLookup";
+import MealWiseBrightDataLookup from "./MealWiseBrightDataLookup";
 
 type Household = { weekly_budget:number|null; zip_code:string|null; latitude:number|null; longitude:number|null; shopping_radius_miles:number };
 type Preferences = { min_savings_for_extra_stop:number; preferred_stop_limit:number; excluded_stores:string[] };
@@ -192,6 +193,7 @@ export default function MealWiseShoppingIntelligence({householdId}:{householdId:
     {stores.length===0&&<div className="mw-generator-note"><strong>No verified local stores yet.</strong> Smart Basket will not invent store availability or prices.</div>}
     {error&&<div className="mw-alert error">{error}</div>}{message&&<div className="mw-alert success">{message}</div>}
     <MealWiseOpenFoodLookup latitude={household?.latitude??null} longitude={household?.longitude??null} radiusMiles={Number(household?.shopping_radius_miles??10)} />
+    <MealWiseBrightDataLookup zipcode={household?.zip_code??null} />
     <section className="mw-shopping-section"><h3>Combined grocery requirements</h3><div className="mw-shopping-list">{items.map(i=><div className="mw-shopping-item" key={i.key}><div><strong>{i.name}</strong><div className="mw-meta">{i.category&&<span>{i.category}</span>}{i.verifyPantry&&<span className="mw-lock">Verify pantry</span>}</div></div><div className="mw-quantity-flow"><span>Need {i.quantity??"?"} {i.unit??""}</span>{i.pantryUsed>0&&<span className="mw-pantry-credit">Pantry −{i.pantryUsed}</span>}<strong>{i.pantryCovered?"Buy 0":`Buy ${i.quantityToBuy??"?"} ${i.unit??""}`}</strong></div></div>)}</div></section>
     <section className="mw-shopping-section"><h3>Shopping strategy</h3><div className="mw-strategy-grid">{strategies.map(s=><button type="button" key={s.id} className={`mw-strategy-card ${selectedId===s.id?"active":""}`} onClick={()=>setSelectedId(s.id)}><span>{s.title}</span><strong>{money(s.total)}</strong><small>{s.stores.length?`${s.stores.length} store${s.stores.length===1?"":"s"}`:"Incomplete"}</small><em>{s.note}</em></button>)}</div>
       {selected&&<div className="mw-price-breakdown">{selected.offers.map(o=><div key={o.itemKey}><span>{items.find(i=>i.key===o.itemKey)?.name??o.row.product_name}</span><span>{o.store.retailer_name}</span><span>{o.packages} pkg</span><strong>{money(o.total)}</strong></div>)}</div>}
