@@ -14,6 +14,7 @@ type Price = { id:string; store_id:string; product_name:string; normalized_produ
 type Item = { key:string; name:string; normalizedName:string; quantity:number|null; unit:string|null; category:string|null; pantryUsed:number; quantityToBuy:number|null; pantryCovered:boolean; verifyPantry:boolean };
 type Offer = { itemKey:string; store:Store; row:Price; packages:number; total:number };
 type Strategy = { id:"cheapest"|"one-stop"|"balance"; title:string; total:number|null; stores:Store[]; offers:Offer[]; missing:Item[]; complete:boolean; note:string };
+type GooglePlace = { place_id:string; display_name:string; formatted_address:string; latitude:number|null; longitude:number|null; primary_type:string|null; types:string[]; business_status:string|null };
 
 const norm=(v:string|null|undefined)=>(v??"").trim().toLowerCase().replace(/\s+/g," ");
 const foodNorm=(v:string|null|undefined)=>norm(v)
@@ -49,9 +50,17 @@ export default function MealWiseShoppingIntelligence({householdId}:{householdId:
   const [prices,setPrices]=useState<Price[]>([]);
   const [selectedId,setSelectedId]=useState<Strategy["id"]>("balance");
   const [brightRunId,setBrightRunId]=useState<string|null>(null);
+  const [googlePlacesConfigured,setGooglePlacesConfigured]=useState<boolean|null>(null);
+  const [nearbyGooglePlaces,setNearbyGooglePlaces]=useState<GooglePlace[]>([]);
   const [busy,setBusy]=useState(false); const [priceBusy,setPriceBusy]=useState(false); const [loading,setLoading]=useState(true); const [error,setError]=useState(""); const [message,setMessage]=useState("");
 
   useEffect(()=>{void load()},[householdId]);
+  useEffect(()=>{void loadGooglePlacesStatus()},[householdId]);
+
+  async function loadGooglePlacesStatus(){
+    const {data,error}=await supabase.functions.invoke("google-places-stores",{body:{action:"status"}});
+    setGooglePlacesConfigured(!error&&Boolean(data?.configured));
+  }
 
   async function load(){
     setLoading(true);setError("");setMessage("");
@@ -222,6 +231,20 @@ export default function MealWiseShoppingIntelligence({householdId}:{householdId:
       return String(error?.message??fallback);
     };
 
+    // Store discovery: Google Places identifies nearby grocery and warehouse stores live.
+    if(googlePlacesConfigured){
+      const places=await supabase.functions.invoke("google-places-stores",{
+        body:{action:"discover",household_id:householdId}
+      });
+      if(places.error){
+        warnings.push(`Nearby stores: ${await errorText(places.error,"Google Places discovery failed")}`);
+      }else{
+        const livePlaces=Array.isArray(places.data?.places)?places.data.places as GooglePlace[]:[];
+        setNearbyGooglePlaces(livePlaces);
+        notes.push(`Nearby stores: ${livePlaces.length} grocery/warehouse location(s) found.`);
+      }
+    }
+
     // Provider 1: Kroger-family direct pricing.
     const kroger=await supabase.functions.invoke("kroger-pricing",{body:{action:"sync",household_id:householdId}});
     if(kroger.error){
@@ -296,10 +319,21 @@ export default function MealWiseShoppingIntelligence({householdId}:{householdId:
     <div className="mw-feature-title"><div><h2>Smart Basket</h2><p>Combines selected meals, converts compatible recipe/pantry units, subtracts what you already have, matches package sizes, and applies your extra-store savings rule.</p></div><div className="mw-card-actions"><button className="mw-secondary" type="button" disabled={priceBusy||busy} onClick={refreshLivePrices}>{priceBusy?"Refreshing…":"Refresh Live Prices"}</button><button className="mw-primary" disabled={busy||priceBusy} onClick={saveList}>{busy?"Saving…":"Save Shopping List"}</button></div></div>
     <div className="mw-shopping-summary"><div><span>Required items</span><strong>{items.length}</strong></div><div><span>Pantry-covered</span><strong>{items.filter(i=>i.pantryCovered).length}</strong></div><div><span>Budget</span><strong>{money(budget==null?null:Number(budget))}</strong></div><div><span>Selected total</span><strong>{money(selected?.total??null)}</strong></div></div>
     {prefs.provider_test_mode&&prefs.provider_test_zip&&<div className="mw-alert"><strong>Provider Test Mode</strong><div>Retailer API tests are using real ZIP {prefs.provider_test_zip}. Household location remains separate.</div></div>}
+    {googlePlacesConfigured===false&&<div className="mw-generator-note"><strong>Nearby store discovery is not connected yet.</strong> Add the Google Places API key in Supabase to enable automatic store discovery.</div>}
     {!prefs.provider_test_mode&&!household?.zip_code&&household?.latitude==null&&<div className="mw-alert error">Add a ZIP code or location in Setup before MealWise compares local stores.</div>}
     {stores.length===0&&<div className="mw-generator-note"><strong>No verified local stores yet.</strong> Smart Basket will not invent store availability or prices.</div>}
     {error&&<div className="mw-alert error">{error}</div>}{message&&<div className="mw-alert success">{message}</div>}
     <MealWiseOpenFoodLookup latitude={household?.latitude??null} longitude={household?.longitude??null} radiusMiles={Number(household?.shopping_radius_miles??10)} />
+    {nearbyGooglePlaces.length>0&&<section className="mw-shopping-section">
+      <h3>Nearby stores</h3>
+      <div className="mw-shopping-list">
+        {nearbyGooglePlaces.map(place=><div className="mw-shopping-item" key={place.place_id}>
+          <div><strong>{place.display_name}</strong><div className="mw-meta">{place.primary_type&&<span>{place.primary_type.replace(/_/g," ")}</span>}{place.business_status&&<span>{place.business_status.replace(/_/g," ").toLowerCase()}</span>}</div></div>
+          <div className="mw-quantity-flow"><span>{place.formatted_address}</span></div>
+        </div>)}
+      </div>
+      <div className="mw-generator-footnote">Store discovery data shown live from <span translate="no" style={{fontFamily:"Roboto, sans-serif",fontStyle:"normal",fontWeight:400,fontSize:"12px",letterSpacing:"normal",whiteSpace:"nowrap",color:"#5e5e5e"}}>Google Maps</span>. MealWise retains only Google Place IDs, not copied place names or addresses.</div>
+    </section>}
     <section className="mw-shopping-section"><h3>Combined grocery requirements</h3><div className="mw-shopping-list">{items.map(i=><div className="mw-shopping-item" key={i.key}><div><strong>{i.name}</strong><div className="mw-meta">{i.category&&<span>{i.category}</span>}{i.verifyPantry&&<span className="mw-lock">Verify pantry</span>}</div></div><div className="mw-quantity-flow"><span>Need {i.quantity??"?"} {i.unit??""}</span>{i.pantryUsed>0&&<span className="mw-pantry-credit">Pantry −{i.pantryUsed}</span>}<strong>{i.pantryCovered?"Buy 0":`Buy ${i.quantityToBuy??"?"} ${i.unit??""}`}</strong></div></div>)}</div></section>
     <section className="mw-shopping-section"><h3>Shopping strategy</h3><div className="mw-strategy-grid">{strategies.map(s=><button type="button" key={s.id} className={`mw-strategy-card ${selectedId===s.id?"active":""}`} onClick={()=>setSelectedId(s.id)}><span>{s.title}</span><strong>{money(s.total)}</strong><small>{s.stores.length?`${s.stores.length} store${s.stores.length===1?"":"s"}`:"Incomplete"}</small><em>{s.note}</em></button>)}</div>
       {selected&&<div className="mw-price-breakdown">{selected.offers.map(o=><div key={o.itemKey}><span>{items.find(i=>i.key===o.itemKey)?.name??o.row.product_name}</span><span>{o.store.retailer_name}</span><span>{o.packages} pkg</span><strong>{money(o.total)}</strong></div>)}</div>}
