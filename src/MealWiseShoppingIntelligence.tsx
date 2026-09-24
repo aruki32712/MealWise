@@ -5,13 +5,13 @@ import MealWiseOpenFoodLookup from "./MealWiseOpenFoodLookup";
 import MealWiseBrightDataLookup from "./MealWiseBrightDataLookup";
 
 type Household = { weekly_budget:number|null; zip_code:string|null; latitude:number|null; longitude:number|null; shopping_radius_miles:number };
-type Preferences = { min_savings_for_extra_stop:number; preferred_stop_limit:number; excluded_stores:string[] };
+type Preferences = { min_savings_for_extra_stop:number; preferred_stop_limit:number; excluded_stores:string[]; provider_test_mode:boolean; provider_test_zip:string|null };
 type Plan = { id:string; week_start:string; budget_target:number|null };
 type PlanMeal = { meal_id:string; selected:boolean };
 type Ingredient = { meal_id:string; ingredient_name:string; normalized_name:string|null; quantity:number|null; unit:string|null; category:string|null; optional:boolean };
 type PantryItem = { item_name:string; normalized_name:string|null; quantity:number|null; unit:string|null; container_size:number|null; container_unit:string|null };
 type Store = { id:string; retailer_name:string; location_name:string|null; zip_code:string|null; latitude:number|null; longitude:number|null };
-type Price = { id:string; store_id:string; product_name:string; normalized_product_name:string|null; package_size:number|null; package_unit:string|null; price:number; sale_price:number|null; observed_at:string; expires_at:string|null };
+type Price = { id:string; store_id:string; product_name:string; normalized_product_name:string|null; package_size:number|null; package_unit:string|null; price:number; sale_price:number|null; observed_at:string; expires_at:string|null; raw_source?:any };
 type Item = { key:string; name:string; normalizedName:string; quantity:number|null; unit:string|null; category:string|null; pantryUsed:number; quantityToBuy:number|null; pantryCovered:boolean; verifyPantry:boolean };
 type Offer = { itemKey:string; store:Store; row:Price; packages:number; total:number };
 type Strategy = { id:"cheapest"|"one-stop"|"balance"; title:string; total:number|null; stores:Store[]; offers:Offer[]; missing:Item[]; complete:boolean; note:string };
@@ -42,7 +42,7 @@ function combos<T>(a:T[],max:number){const out:T[][]=[];const walk=(start:number
 
 export default function MealWiseShoppingIntelligence({householdId}:{householdId:string}){
   const [household,setHousehold]=useState<Household|null>(null);
-  const [prefs,setPrefs]=useState<Preferences>({min_savings_for_extra_stop:10,preferred_stop_limit:1,excluded_stores:[]});
+  const [prefs,setPrefs]=useState<Preferences>({min_savings_for_extra_stop:10,preferred_stop_limit:1,excluded_stores:[],provider_test_mode:false,provider_test_zip:null});
   const [plan,setPlan]=useState<Plan|null>(null);
   const [ingredients,setIngredients]=useState<Ingredient[]>([]);
   const [pantry,setPantry]=useState<PantryItem[]>([]);
@@ -57,26 +57,74 @@ export default function MealWiseShoppingIntelligence({householdId}:{householdId:
     setLoading(true);setError("");setMessage("");
     const [h,p,pl,pa,st]=await Promise.all([
       supabase.from("households").select("weekly_budget,zip_code,latitude,longitude,shopping_radius_miles").eq("id",householdId).single(),
-      supabase.from("household_preferences").select("min_savings_for_extra_stop,preferred_stop_limit,excluded_stores").eq("household_id",householdId).maybeSingle(),
+      supabase.from("household_preferences").select("min_savings_for_extra_stop,preferred_stop_limit,excluded_stores,provider_test_mode,provider_test_zip").eq("household_id",householdId).maybeSingle(),
       supabase.from("meal_plans").select("id,week_start,budget_target").eq("household_id",householdId).eq("status","active").order("week_start",{ascending:false}).limit(1).maybeSingle(),
       supabase.from("pantry_items").select("item_name,normalized_name,quantity,unit,container_size,container_unit").eq("household_id",householdId),
       supabase.from("stores").select("id,retailer_name,location_name,zip_code,latitude,longitude").eq("active",true).limit(500),
     ]);
     const first=h.error||p.error||pl.error||pa.error||st.error;if(first){setError(first.message);setLoading(false);return}
-    const hh=h.data as Household;setHousehold(hh);setPrefs({min_savings_for_extra_stop:Number(p.data?.min_savings_for_extra_stop??10),preferred_stop_limit:Number(p.data?.preferred_stop_limit??1),excluded_stores:p.data?.excluded_stores??[]});setPlan((pl.data??null) as Plan|null);setPantry((pa.data??[]) as PantryItem[]);
-    const local=(st.data??[] as Store[]).filter(s=>{
-      if((p.data?.excluded_stores??[]).some((x:string)=>norm(s.retailer_name)===norm(x)))return false;
-      if(hh.latitude!=null&&hh.longitude!=null&&s.latitude!=null&&s.longitude!=null)return haversine(hh.latitude,hh.longitude,s.latitude,s.longitude)<=Number(hh.shopping_radius_miles??10);
-      if(hh.zip_code&&s.zip_code)return norm(hh.zip_code)===norm(s.zip_code);
-      return false;
-    });
-    setStores(local);
-    if(!pl.data){setIngredients([]);setPrices([]);setLoading(false);return}
+
+    const hh=h.data as Household;
+    const nextPrefs:Preferences={
+      min_savings_for_extra_stop:Number(p.data?.min_savings_for_extra_stop??10),
+      preferred_stop_limit:Number(p.data?.preferred_stop_limit??1),
+      excluded_stores:p.data?.excluded_stores??[],
+      provider_test_mode:Boolean(p.data?.provider_test_mode),
+      provider_test_zip:p.data?.provider_test_zip??null,
+    };
+    setHousehold(hh);setPrefs(nextPrefs);setPlan((pl.data??null) as Plan|null);setPantry((pa.data??[]) as PantryItem[]);
+
+    const allStores=(st.data??[] as Store[]).filter(s=>!nextPrefs.excluded_stores.some((x:string)=>norm(s.retailer_name)===norm(x)));
+    const testMode=Boolean(nextPrefs.provider_test_mode&&nextPrefs.provider_test_zip);
+    const effectiveZip=testMode?String(nextPrefs.provider_test_zip):String(hh.zip_code??"");
+
+    let local:Store[]=[];
+    let loadedPrices:Price[]=[];
+    const now=new Date().toISOString();
+    const cutoff=new Date(Date.now()-14*24*60*60*1000).toISOString();
+
+    if(testMode){
+      if(allStores.length){
+        const pr=await supabase.from("store_prices")
+          .select("id,store_id,product_name,normalized_product_name,package_size,package_unit,price,sale_price,observed_at,expires_at,raw_source")
+          .in("store_id",allStores.map(s=>s.id))
+          .gte("observed_at",cutoff)
+          .or(`expires_at.is.null,expires_at.gt.${now}`)
+          .limit(5000);
+        if(pr.error)setError(pr.error.message);
+        else{
+          loadedPrices=((pr.data??[]) as Price[]).filter(row=>
+            row.raw_source?.provider_test_mode===true &&
+            String(row.raw_source?.location_context_zip??"")===effectiveZip
+          );
+          const storeIds=new Set(loadedPrices.map(row=>row.store_id));
+          local=allStores.filter(s=>storeIds.has(s.id));
+        }
+      }
+    }else{
+      local=allStores.filter(s=>{
+        if(hh.latitude!=null&&hh.longitude!=null&&s.latitude!=null&&s.longitude!=null)return haversine(hh.latitude,hh.longitude,s.latitude,s.longitude)<=Number(hh.shopping_radius_miles??10);
+        if(hh.zip_code&&s.zip_code)return norm(hh.zip_code)===norm(s.zip_code);
+        return false;
+      });
+      if(local.length){
+        const pr=await supabase.from("store_prices")
+          .select("id,store_id,product_name,normalized_product_name,package_size,package_unit,price,sale_price,observed_at,expires_at,raw_source")
+          .in("store_id",local.map(s=>s.id))
+          .gte("observed_at",cutoff)
+          .or(`expires_at.is.null,expires_at.gt.${now}`)
+          .limit(5000);
+        if(pr.error)setError(pr.error.message);else loadedPrices=(pr.data??[]) as Price[];
+      }
+    }
+
+    setStores(local);setPrices(loadedPrices);
+
+    if(!pl.data){setIngredients([]);setLoading(false);return}
     const pm=await supabase.from("meal_plan_meals").select("meal_id,selected").eq("meal_plan_id",pl.data.id).eq("selected",true);if(pm.error){setError(pm.error.message);setLoading(false);return}
     const mealIds=[...new Set(((pm.data??[]) as PlanMeal[]).map(x=>x.meal_id))];
-    if(!mealIds.length){setIngredients([]);setPrices([]);setLoading(false);return}
+    if(!mealIds.length){setIngredients([]);setLoading(false);return}
     const ing=await supabase.from("meal_ingredients").select("meal_id,ingredient_name,normalized_name,quantity,unit,category,optional").in("meal_id",mealIds).eq("optional",false);if(ing.error){setError(ing.error.message);setLoading(false);return}setIngredients((ing.data??[]) as Ingredient[]);
-    if(local.length){const now=new Date().toISOString(),cutoff=new Date(Date.now()-14*24*60*60*1000).toISOString();const pr=await supabase.from("store_prices").select("id,store_id,product_name,normalized_product_name,package_size,package_unit,price,sale_price,observed_at,expires_at").in("store_id",local.map(s=>s.id)).gte("observed_at",cutoff).or(`expires_at.is.null,expires_at.gt.${now}`).limit(5000);if(pr.error)setError(pr.error.message);else setPrices((pr.data??[]) as Price[])} else setPrices([]);
     setLoading(false);
   }
 
@@ -169,8 +217,8 @@ export default function MealWiseShoppingIntelligence({householdId}:{householdId:
       return;
     }
     await load();
-    if((data?.locations_found??0)===0)setMessage(data?.message??"No Kroger-family locations were returned for this household.");
-    else setMessage(`Live pricing refreshed from ${data?.provider??"Kroger"}: ${data?.prices_saved??0} price records from ${data?.locations_found??0} nearby location(s).`);
+    if((data?.locations_found??0)===0)setMessage(data?.message??"No Kroger-family locations were returned for this location.");
+    else setMessage(`Live pricing refreshed from ${data?.provider??"Kroger"}: ${data?.prices_saved??0} price records from ${data?.locations_found??0} nearby location(s)${data?.provider_test_mode?` using test ZIP ${data?.location_context_zip}`:""}.`);
     setPriceBusy(false);
   }
 
@@ -189,11 +237,12 @@ export default function MealWiseShoppingIntelligence({householdId}:{householdId:
   return <div className="mw-feature">
     <div className="mw-feature-title"><div><h2>Smart Basket</h2><p>Combines selected meals, converts compatible recipe/pantry units, subtracts what you already have, matches package sizes, and applies your extra-store savings rule.</p></div><div className="mw-card-actions"><button className="mw-secondary" type="button" disabled={priceBusy||busy} onClick={refreshLivePrices}>{priceBusy?"Refreshing…":"Refresh Live Prices"}</button><button className="mw-primary" disabled={busy||priceBusy} onClick={saveList}>{busy?"Saving…":"Save Shopping List"}</button></div></div>
     <div className="mw-shopping-summary"><div><span>Required items</span><strong>{items.length}</strong></div><div><span>Pantry-covered</span><strong>{items.filter(i=>i.pantryCovered).length}</strong></div><div><span>Budget</span><strong>{money(budget==null?null:Number(budget))}</strong></div><div><span>Selected total</span><strong>{money(selected?.total??null)}</strong></div></div>
-    {!household?.zip_code&&household?.latitude==null&&<div className="mw-alert error">Add a ZIP code or location in Setup before MealWise compares local stores.</div>}
+    {prefs.provider_test_mode&&prefs.provider_test_zip&&<div className="mw-alert"><strong>Provider Test Mode</strong><div>Retailer API tests are using real ZIP {prefs.provider_test_zip}. Household location remains separate.</div></div>}
+    {!prefs.provider_test_mode&&!household?.zip_code&&household?.latitude==null&&<div className="mw-alert error">Add a ZIP code or location in Setup before MealWise compares local stores.</div>}
     {stores.length===0&&<div className="mw-generator-note"><strong>No verified local stores yet.</strong> Smart Basket will not invent store availability or prices.</div>}
     {error&&<div className="mw-alert error">{error}</div>}{message&&<div className="mw-alert success">{message}</div>}
     <MealWiseOpenFoodLookup latitude={household?.latitude??null} longitude={household?.longitude??null} radiusMiles={Number(household?.shopping_radius_miles??10)} />
-    <MealWiseBrightDataLookup zipcode={household?.zip_code??null} />
+    <MealWiseBrightDataLookup zipcode={prefs.provider_test_mode&&prefs.provider_test_zip?prefs.provider_test_zip:(household?.zip_code??null)} />
     <section className="mw-shopping-section"><h3>Combined grocery requirements</h3><div className="mw-shopping-list">{items.map(i=><div className="mw-shopping-item" key={i.key}><div><strong>{i.name}</strong><div className="mw-meta">{i.category&&<span>{i.category}</span>}{i.verifyPantry&&<span className="mw-lock">Verify pantry</span>}</div></div><div className="mw-quantity-flow"><span>Need {i.quantity??"?"} {i.unit??""}</span>{i.pantryUsed>0&&<span className="mw-pantry-credit">Pantry −{i.pantryUsed}</span>}<strong>{i.pantryCovered?"Buy 0":`Buy ${i.quantityToBuy??"?"} ${i.unit??""}`}</strong></div></div>)}</div></section>
     <section className="mw-shopping-section"><h3>Shopping strategy</h3><div className="mw-strategy-grid">{strategies.map(s=><button type="button" key={s.id} className={`mw-strategy-card ${selectedId===s.id?"active":""}`} onClick={()=>setSelectedId(s.id)}><span>{s.title}</span><strong>{money(s.total)}</strong><small>{s.stores.length?`${s.stores.length} store${s.stores.length===1?"":"s"}`:"Incomplete"}</small><em>{s.note}</em></button>)}</div>
       {selected&&<div className="mw-price-breakdown">{selected.offers.map(o=><div key={o.itemKey}><span>{items.find(i=>i.key===o.itemKey)?.name??o.row.product_name}</span><span>{o.store.retailer_name}</span><span>{o.packages} pkg</span><strong>{money(o.total)}</strong></div>)}</div>}
