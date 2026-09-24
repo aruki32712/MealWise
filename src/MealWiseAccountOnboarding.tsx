@@ -26,6 +26,8 @@ type FormState = {
   maxCookMinutes: string;
   minSavingsForExtraStop: string;
   preferredStopLimit: number;
+  providerTestMode: boolean;
+  providerTestZip: string;
 };
 
 type Section = "setup" | "discover" | "recipes" | "pantry" | "weekly" | "shopping" | "test";
@@ -35,6 +37,7 @@ const emptyForm: FormState = {
   locationText: "", latitude: null, longitude: null, shoppingRadiusMiles: 10,
   dietaryPlan: "", allergies: "", dislikedFoods: "", preferredStores: "",
   excludedStores: "", maxCookMinutes: "", minSavingsForExtraStop: "10", preferredStopLimit: 1,
+  providerTestMode: false, providerTestZip: "",
 };
 
 const toArray = (value: string) => value.split(",").map((v) => v.trim()).filter(Boolean);
@@ -86,7 +89,7 @@ export default function MealWiseAccountOnboarding() {
       setActiveSection("weekly");
     }
     const { data: pref, error: pError } = await supabase.from("household_preferences")
-      .select("dietary_plan,allergies,disliked_foods,preferred_stores,excluded_stores,max_cook_minutes,min_savings_for_extra_stop,preferred_stop_limit")
+      .select("dietary_plan,allergies,disliked_foods,preferred_stores,excluded_stores,max_cook_minutes,min_savings_for_extra_stop,preferred_stop_limit,provider_test_mode,provider_test_zip")
       .eq("household_id", household.id).maybeSingle();
     if (pError) { setError(pError.message); setBusy(false); return; }
 
@@ -101,6 +104,7 @@ export default function MealWiseAccountOnboarding() {
       dislikedFoods: toCsv(pref?.disliked_foods), preferredStores: toCsv(pref?.preferred_stores),
       excludedStores: toCsv(pref?.excluded_stores), maxCookMinutes: pref?.max_cook_minutes == null ? "" : String(pref.max_cook_minutes),
       minSavingsForExtraStop: String(pref?.min_savings_for_extra_stop ?? 10), preferredStopLimit: Number(pref?.preferred_stop_limit ?? 1),
+      providerTestMode: Boolean(pref?.provider_test_mode), providerTestZip: pref?.provider_test_zip ?? "",
     });
     setBusy(false);
   }
@@ -145,7 +149,10 @@ export default function MealWiseAccountOnboarding() {
       disliked_foods: toArray(form.dislikedFoods), preferred_stores: toArray(form.preferredStores), excluded_stores: toArray(form.excludedStores),
       max_cook_minutes: form.maxCookMinutes ? Number(form.maxCookMinutes) : null,
       min_savings_for_extra_stop: form.minSavingsForExtraStop ? Number(form.minSavingsForExtraStop) : 10,
-      preferred_stop_limit: Math.max(1, form.preferredStopLimit), updated_at: new Date().toISOString(),
+      preferred_stop_limit: Math.max(1, form.preferredStopLimit),
+      provider_test_mode: isAdminTester ? form.providerTestMode : false,
+      provider_test_zip: isAdminTester && form.providerTestMode && form.providerTestZip.trim() ? form.providerTestZip.trim() : null,
+      updated_at: new Date().toISOString(),
     }, { onConflict: "household_id" });
 
     if (prefError) setError(prefError.message);
@@ -194,7 +201,11 @@ export default function MealWiseAccountOnboarding() {
         <div className="mw-location"><strong>Current location</strong><button type="button" className="mw-secondary" onClick={useCurrentLocation}>Use my current location</button></div>
         <label>Preferred stores<input value={form.preferredStores} onChange={(e) => set("preferredStores", e.target.value)} placeholder="Aldi, Walmart, Publix" /></label>
         <label>Stores to exclude<input value={form.excludedStores} onChange={(e) => set("excludedStores", e.target.value)} /></label>
-      </div></section>
+        {isAdminTester && <label>Provider test ZIP (real ZIP)<input inputMode="numeric" value={form.providerTestZip} onChange={(e) => set("providerTestZip", e.target.value.replace(/[^0-9-]/g, ""))} placeholder="68005" disabled={!form.providerTestMode} /></label>}
+        {isAdminTester && <label className="mw-location"><strong>Provider Test Mode</strong><input type="checkbox" checked={form.providerTestMode} onChange={(e) => set("providerTestMode", e.target.checked)} /></label>}
+      </div>
+      {isAdminTester && form.providerTestMode && <div className="mw-rule"><strong>Test mode:</strong> retailer APIs use ZIP {form.providerTestZip || "not set"} for development. This is a real ZIP used for testing and does not redefine the household's normal location.</div>}
+      </section>
       <section><h2>Food preferences</h2><div className="mw-grid">
         <label>Dietary plan<select value={form.dietaryPlan} onChange={(e) => set("dietaryPlan", e.target.value)}><option value="">No specific plan</option><option value="balanced">Balanced</option><option value="high-protein">High protein</option><option value="low-carb">Low carb</option><option value="keto">Keto</option><option value="mediterranean">Mediterranean</option><option value="vegetarian">Vegetarian</option><option value="vegan">Vegan</option><option value="pescatarian">Pescatarian</option><option value="gluten-free">Gluten free</option></select></label>
         <label>Allergies<input value={form.allergies} onChange={(e) => set("allergies", e.target.value)} placeholder="Peanuts, shellfish" /></label>
