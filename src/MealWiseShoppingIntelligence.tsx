@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "./lib/supabase";
 import { convertQuantity, measureGroupKey, normalizeUnit, roundMeasure, unitsCompatible } from "./lib/measurements";
 import MealWiseOpenFoodLookup from "./MealWiseOpenFoodLookup";
-import MealWiseBrightDataLookup from "./MealWiseBrightDataLookup";
 
 type Household = { weekly_budget:number|null; zip_code:string|null; latitude:number|null; longitude:number|null; shopping_radius_miles:number };
 type Preferences = { min_savings_for_extra_stop:number; preferred_stop_limit:number; excluded_stores:string[]; provider_test_mode:boolean; provider_test_zip:string|null };
@@ -49,6 +48,7 @@ export default function MealWiseShoppingIntelligence({householdId}:{householdId:
   const [stores,setStores]=useState<Store[]>([]);
   const [prices,setPrices]=useState<Price[]>([]);
   const [selectedId,setSelectedId]=useState<Strategy["id"]>("balance");
+  const [brightRunId,setBrightRunId]=useState<string|null>(null);
   const [busy,setBusy]=useState(false); const [priceBusy,setPriceBusy]=useState(false); const [loading,setLoading]=useState(true); const [error,setError]=useState(""); const [message,setMessage]=useState("");
 
   useEffect(()=>{void load()},[householdId]);
@@ -208,17 +208,75 @@ export default function MealWiseShoppingIntelligence({householdId}:{householdId:
 
   async function refreshLivePrices(){
     setPriceBusy(true);setError("");setMessage("");
-    const {data,error:invokeError}=await supabase.functions.invoke("kroger-pricing",{body:{action:"sync",household_id:householdId}});
-    if(invokeError){
-      let payload:any=null;
-      try{const response=(invokeError as any)?.context;if(response?.json)payload=await response.json()}catch{}
-      setError(payload?.error??invokeError.message??"Unable to refresh live prices.");
-      setPriceBusy(false);
-      return;
+    const notes:string[]=[];
+    const warnings:string[]=[];
+
+    const errorText=async(error:any,fallback:string)=>{
+      try{
+        const response=error?.context;
+        if(response?.json){
+          const payload=await response.json();
+          if(payload?.error)return String(payload.error);
+        }
+      }catch{}
+      return String(error?.message??fallback);
+    };
+
+    // Provider 1: Kroger-family direct pricing.
+    const kroger=await supabase.functions.invoke("kroger-pricing",{body:{action:"sync",household_id:householdId}});
+    if(kroger.error){
+      warnings.push(`Kroger: ${await errorText(kroger.error,"refresh failed")}`);
+    }else if((kroger.data?.locations_found??0)===0){
+      notes.push(kroger.data?.message??"No Kroger-family locations were returned for this location.");
+    }else{
+      notes.push(`Kroger: ${kroger.data?.prices_saved??0} price records from ${kroger.data?.locations_found??0} location(s)${kroger.data?.provider_test_mode?` using test ZIP ${kroger.data?.location_context_zip}`:""}.`);
     }
+
+    // Provider 2: Bright Data runs in the background for Walmart-owned offers.
+    const walmartQueries=[...new Set(purchaseItems.map(i=>i.normalizedName||i.name).filter(Boolean))].slice(0,12);
+    let runId=brightRunId;
+
+    if(!runId&&walmartQueries.length){
+      const start=await supabase.functions.invoke("bright-data-retail",{
+        body:{action:"walmart_sync_start",household_id:householdId,queries:walmartQueries}
+      });
+      if(start.error){
+        warnings.push(`Walmart: ${await errorText(start.error,"Bright Data search failed")}`);
+      }else if(start.data?.run_id){
+        runId=String(start.data.run_id);
+        setBrightRunId(runId);
+      }
+    }
+
+    let walmartFinished:any=null;
+    if(runId){
+      for(let attempt=0;attempt<7;attempt++){
+        if(attempt>0)await new Promise(resolve=>setTimeout(resolve,1250));
+        const finish=await supabase.functions.invoke("bright-data-retail",{
+          body:{action:"walmart_sync_finish",run_id:runId}
+        });
+        if(finish.error){
+          warnings.push(`Walmart: ${await errorText(finish.error,"Bright Data result retrieval failed")}`);
+          break;
+        }
+        if(finish.data?.ready){
+          walmartFinished=finish.data;
+          setBrightRunId(null);
+          runId=null;
+          break;
+        }
+      }
+    }
+
+    if(walmartFinished){
+      notes.push(`Walmart: ${walmartFinished.prices_saved??0} Walmart-owned price offer(s) added to Smart Basket.`);
+    }else if(runId){
+      notes.push("Walmart pricing is still processing. Tap Refresh Live Prices again to finish the same job; MealWise will not start a duplicate job.");
+    }
+
     await load();
-    if((data?.locations_found??0)===0)setMessage(data?.message??"No Kroger-family locations were returned for this location.");
-    else setMessage(`Live pricing refreshed from ${data?.provider??"Kroger"}: ${data?.prices_saved??0} price records from ${data?.locations_found??0} nearby location(s)${data?.provider_test_mode?` using test ZIP ${data?.location_context_zip}`:""}.`);
+    if(notes.length)setMessage(notes.join(" "));
+    if(warnings.length)setError(warnings.join(" "));
     setPriceBusy(false);
   }
 
@@ -242,13 +300,12 @@ export default function MealWiseShoppingIntelligence({householdId}:{householdId:
     {stores.length===0&&<div className="mw-generator-note"><strong>No verified local stores yet.</strong> Smart Basket will not invent store availability or prices.</div>}
     {error&&<div className="mw-alert error">{error}</div>}{message&&<div className="mw-alert success">{message}</div>}
     <MealWiseOpenFoodLookup latitude={household?.latitude??null} longitude={household?.longitude??null} radiusMiles={Number(household?.shopping_radius_miles??10)} />
-    <MealWiseBrightDataLookup zipcode={prefs.provider_test_mode&&prefs.provider_test_zip?prefs.provider_test_zip:(household?.zip_code??null)} />
     <section className="mw-shopping-section"><h3>Combined grocery requirements</h3><div className="mw-shopping-list">{items.map(i=><div className="mw-shopping-item" key={i.key}><div><strong>{i.name}</strong><div className="mw-meta">{i.category&&<span>{i.category}</span>}{i.verifyPantry&&<span className="mw-lock">Verify pantry</span>}</div></div><div className="mw-quantity-flow"><span>Need {i.quantity??"?"} {i.unit??""}</span>{i.pantryUsed>0&&<span className="mw-pantry-credit">Pantry −{i.pantryUsed}</span>}<strong>{i.pantryCovered?"Buy 0":`Buy ${i.quantityToBuy??"?"} ${i.unit??""}`}</strong></div></div>)}</div></section>
     <section className="mw-shopping-section"><h3>Shopping strategy</h3><div className="mw-strategy-grid">{strategies.map(s=><button type="button" key={s.id} className={`mw-strategy-card ${selectedId===s.id?"active":""}`} onClick={()=>setSelectedId(s.id)}><span>{s.title}</span><strong>{money(s.total)}</strong><small>{s.stores.length?`${s.stores.length} store${s.stores.length===1?"":"s"}`:"Incomplete"}</small><em>{s.note}</em></button>)}</div>
       {selected&&<div className="mw-price-breakdown">{selected.offers.map(o=><div key={o.itemKey}><span>{items.find(i=>i.key===o.itemKey)?.name??o.row.product_name}</span><span>{o.store.retailer_name}</span><span>{o.packages} pkg</span><strong>{money(o.total)}</strong></div>)}</div>}
       {selected?.missing.length>0&&<div className="mw-generator-note"><strong>Missing verified prices:</strong> {selected.missing.map(i=>i.name).join(", ")}. MealWise will not fabricate a total.</div>}
     </section>
     <section className="mw-shopping-section"><h3>Budget check</h3>{selected?.total==null?<div className="mw-generator-note">A complete budget comparison needs verified prices for every purchase item.</div>:!over?<div className="mw-budget-good"><strong>Within budget.</strong> {budget!=null&&<>About {money(Number(budget)-selected.total)} remains.</>}</div>:<div className="mw-budget-rescue"><div className="mw-budget-over"><strong>Over budget by {money(selected.total-Number(budget))}</strong><span>Budget Rescue only proposes changes supported by verified data.</span></div>{cheaper?<div className="mw-rescue-row"><div><strong>Switch to {cheaper.title}</strong><span>Verified store-strategy savings: {money(selected.total-(cheaper.total??selected.total))}</span></div><button className="mw-secondary" onClick={()=>setSelectedId(cheaper.id)}>Use strategy</button></div>:<div className="mw-generator-note">No verified store-only rescue is available yet. MealWise will not invent ingredient or recipe substitutions.</div>}</div>}</section>
-    <div className="mw-generator-footnote">Price safety: only recent, unexpired verified provider prices are used. Compatible package units are converted before package counts are calculated; unknown conversions remain unpriced rather than guessed.</div>
+    <div className="mw-generator-footnote">Price safety: Smart Basket combines recent provider prices behind the scenes. Kroger supplies direct store pricing where available; Bright Data fills Walmart.com gaps using Walmart-owned offers only. Third-party Walmart Marketplace sellers are excluded. Compatible package units are converted before package counts are calculated; unknown conversions remain unpriced rather than guessed.</div>
   </div>;
 }
